@@ -42,10 +42,18 @@ static int gz_read_init(gz_state *state) {
 /* Use read() to load a buffer -- return -1 on error, otherwise 0.  Read from
    state->fd, and update state->eof, state->err, and state->msg as appropriate.
    This function needs to loop on read(), since read() is not guaranteed to
-   read the number of bytes requested, depending on the type of descriptor. */
+   read the number of bytes requested, depending on the type of descriptor. It
+   also needs to loop to manage the fact that read() returns an int. If the
+   descriptor is non-blocking and read() returns with no data in order to avoid
+   blocking, then gz_load() will return 0 if some data has been read, or -1 if
+   no data has been read. Either way, state->again is set true to indicate a
+   non-blocking event. If errno is non-zero on return, then there was an error
+   signaled from read().  *have is set to the number of bytes read. */
 static int gz_load(gz_state *state, unsigned char *buf, unsigned len, unsigned *have) {
     ssize_t ret;
 
+    state->again = 0;
+    errno = 0;
     *have = 0;
     do {
         ret = read(state->fd, buf + *have, len - *have);
@@ -54,6 +62,11 @@ static int gz_load(gz_state *state, unsigned char *buf, unsigned len, unsigned *
         *have += (unsigned)ret;
     } while (*have < len);
     if (ret < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            state->again = 1;
+            if (*have != 0)
+                return 0;
+        }
         PREFIX(gz_error)(state, Z_ERRNO, zstrerror());
         return -1;
     }
@@ -124,7 +137,9 @@ static int gz_look(gz_state *state) {
     if (strm->avail_in < 2) {
         if (gz_avail(state) == -1)
             return -1;
-        if (strm->avail_in == 0)
+        if (strm->avail_in == 0 || (state->again && strm->avail_in < 2))
+            /* if non-blocking input stalled before getting two bytes, then
+               return and wait until a later call has accumulated enough */
             return 0;
     }
 
@@ -168,7 +183,10 @@ static int gz_look(gz_state *state) {
    On return, state->x.have and state->x.next point to the just decompressed
    data.  If the gzip stream completes, state->how is reset to LOOK to look for
    the next gzip stream or raw data, once state->x.have is depleted.  Returns 0
-   on success, -1 on failure. */
+   on success, -1 on failure. If EOF is reached when looking for more input to
+   complete the gzip member, then an unexpected end of file error is raised.
+   If there is no more input, but state->again is true, then EOF has not been
+   reached, and no error is raised. */
 static int gz_decomp(gz_state *state) {
     int ret = Z_OK;
     unsigned had;
@@ -181,7 +199,8 @@ static int gz_decomp(gz_state *state) {
         if (strm->avail_in == 0 && gz_avail(state) == -1)
             return -1;
         if (strm->avail_in == 0) {
-            PREFIX(gz_error)(state, Z_BUF_ERROR, "unexpected end of file");
+            if (!state->again)
+                PREFIX(gz_error)(state, Z_BUF_ERROR, "unexpected end of file");
             break;
         }
 
@@ -364,18 +383,20 @@ static size_t gz_read(gz_state *state, void *buf, size_t len) {
 z_int32_t Z_EXPORT PREFIX(gzread)(gzFile file, void *buf, z_uint32_t len) {
     gz_state *state;
 
-    /* get internal structure */
+    /* get internal structure and check that it's for reading */
     if (file == NULL)
         return -1;
     /* reject a NULL buffer with nonzero length before it is written to */
     if (buf == NULL && len != 0)
         return -1;
     state = (gz_state *)file;
-
-    /* check that we're reading and that there's no (serious) error */
-    if (state->mode != GZ_READ ||
-            (state->err != Z_OK && state->err != Z_BUF_ERROR))
+    if (state->mode != GZ_READ)
         return -1;
+
+    /* check that there was no (serious) error */
+    if (state->err != Z_OK && state->err != Z_BUF_ERROR && !state->again)
+        return -1;
+    PREFIX(gz_error)(state, Z_OK, NULL);
 
     /* since an int is returned, make sure len fits in one, otherwise return
        with an error (this avoids a flaw in the interface) */
@@ -388,8 +409,17 @@ z_int32_t Z_EXPORT PREFIX(gzread)(gzFile file, void *buf, z_uint32_t len) {
     len = (unsigned)gz_read(state, buf, len);
 
     /* check for an error */
-    if (len == 0 && state->err != Z_OK && state->err != Z_BUF_ERROR)
-        return -1;
+    if (len == 0) {
+        if (state->err != Z_OK && state->err != Z_BUF_ERROR)
+            return -1;
+        if (state->again) {
+            /* non-blocking input stalled after some input was read, but no
+               uncompressed bytes were produced -- let the application know
+               this isn't EOF */
+            PREFIX(gz_error)(state, Z_ERRNO, zstrerror());
+            return -1;
+        }
+    }
 
     /* return the number of bytes read (this is assured to fit in an int) */
     return (z_int32_t)len;
@@ -404,15 +434,17 @@ size_t Z_EXPORT PREFIX(gzfread)(void *buf, size_t size, size_t nitems, gzFile fi
     if (size == 0)
         return 0;
 
-    /* get internal structure */
+    /* get internal structure and check that it's for reading */
     if (file == NULL)
         return 0;
     state = (gz_state *)file;
-
-    /* check that we're reading and that there's no (serious) error */
-    if (state->mode != GZ_READ ||
-            (state->err != Z_OK && state->err != Z_BUF_ERROR))
+    if (state->mode != GZ_READ)
         return 0;
+
+    /* check that there was no (serious) error */
+    if (state->err != Z_OK && state->err != Z_BUF_ERROR && !state->again)
+        return 0;
+    PREFIX(gz_error)(state, Z_OK, NULL);
 
     /* compute bytes to read -- error on overflow */
     if (size && SIZE_MAX / size < nitems) {
@@ -430,14 +462,17 @@ z_int32_t Z_EXPORT PREFIX(gzgetc)(gzFile file) {
     unsigned char buf[1];
     gz_state *state;
 
-    /* get internal structure */
+    /* get internal structure and check that it's for reading */
     if (file == NULL)
         return -1;
     state = (gz_state *)file;
-
-    /* check that we're reading and that there's no (serious) error */
-    if (state->mode != GZ_READ || (state->err != Z_OK && state->err != Z_BUF_ERROR))
+    if (state->mode != GZ_READ)
         return -1;
+
+    /* check that there was no (serious) error */
+    if (state->err != Z_OK && state->err != Z_BUF_ERROR && !state->again)
+        return -1;
+    PREFIX(gz_error)(state, Z_OK, NULL);
 
     /* try output buffer (no need to check for skip request) */
     if (state->x.have) {
@@ -460,18 +495,21 @@ int Z_EXPORT PREFIX(gzgetc_)(gzFile file) {
 z_int32_t Z_EXPORT PREFIX(gzungetc)(z_int32_t c, gzFile file) {
     gz_state *state;
 
-    /* get internal structure */
+    /* get internal structure and check that it's for reading */
     if (file == NULL)
         return -1;
     state = (gz_state *)file;
+    if (state->mode != GZ_READ)
+        return -1;
 
     /* in case this was just opened, set up the input buffer */
-    if (state->mode == GZ_READ && state->how == LOOK && state->x.have == 0)
+    if (state->how == LOOK && state->x.have == 0)
         (void)gz_look(state);
 
-    /* check that we're reading and that there's no (serious) error */
-    if (state->mode != GZ_READ || (state->err != Z_OK && state->err != Z_BUF_ERROR))
+    /* check that there was no (serious) error */
+    if (state->err != Z_OK && state->err != Z_BUF_ERROR && !state->again)
         return -1;
+    PREFIX(gz_error)(state, Z_OK, NULL);
 
     /* process a skip request */
     if (state->skip && gz_skip(state) == -1)
@@ -520,22 +558,25 @@ char * Z_EXPORT PREFIX(gzgets)(gzFile file, char *buf, z_int32_t len) {
     unsigned char *eol;
     gz_state *state;
 
-    /* check parameters and get internal structure */
+    /* check parameters, get internal structure, and check that it's for
+       reading */
     if (file == NULL || buf == NULL || len < 1)
         return NULL;
     state = (gz_state *)file;
-
-    /* check that we're reading and that there's no (serious) error */
-    if (state->mode != GZ_READ || (state->err != Z_OK && state->err != Z_BUF_ERROR))
+    if (state->mode != GZ_READ)
         return NULL;
+
+    /* check that there was no (serious) error */
+    if (state->err != Z_OK && state->err != Z_BUF_ERROR && !state->again)
+        return NULL;
+    PREFIX(gz_error)(state, Z_OK, NULL);
 
     /* process a skip request */
     if (state->skip && gz_skip(state) == -1)
         return NULL;
 
-    /* copy output bytes up to new line or len - 1, whichever comes first --
-       append a terminating zero to the string (we don't check for a zero in
-       the contents, let the user worry about that) */
+    /* copy output up to a new line, len-1 bytes, or there is no more output,
+       whichever comes first */
     str = buf;
     left = (unsigned)len - 1;
     if (left) {
@@ -564,7 +605,9 @@ char * Z_EXPORT PREFIX(gzgets)(gzFile file, char *buf, z_int32_t len) {
         } while (left && eol == NULL);
     }
 
-    /* return terminated string, or if nothing, end of file */
+    /* append a terminating zero to the string (we don't check for a zero in
+       the contents, let the user worry about that) -- return the terminated
+       string, or if nothing was read, NULL */
     if (buf == str)
         return NULL;
     buf[0] = 0;
@@ -595,13 +638,11 @@ z_int32_t Z_EXPORT PREFIX(gzclose_r)(gzFile file) {
     int ret, err;
     gz_state *state;
 
-    /* get internal structure */
+    /* get internal structure and check that it's for reading */
     if (file == NULL)
         return Z_STREAM_ERROR;
 
     state = (gz_state *)file;
-
-    /* check that we're reading */
     if (state->mode != GZ_READ)
         return Z_STREAM_ERROR;
 
