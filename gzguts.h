@@ -70,8 +70,8 @@
 #endif
 
 /* get errno and strerror definition */
+#include <errno.h>
 #ifndef NO_STRERROR
-#  include <errno.h>
 #  define zstrerror() strerror(errno)
 #else
 #  define zstrerror() "stdio error (consult errno)"
