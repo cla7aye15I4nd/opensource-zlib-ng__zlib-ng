@@ -432,6 +432,7 @@ z_int32_t Z_EXPORTVA PREFIX(gzvprintf)(gzFile file, const char *format, va_list 
                a Z_BUF_ERROR to let the application know that this gzprintf()
                needs to be retried. */
             PREFIX(gz_error)(state, Z_BUF_ERROR, "stalled write on gzprintf");
+            return state->err;
         }
         if (!state->again)
             return state->err;
