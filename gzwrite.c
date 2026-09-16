@@ -201,16 +201,21 @@ static size_t gz_write(gz_state *state, void const *buf, size_t len) {
             return 0;
 
         /* directly compress user buffer to file */
-        state->strm.next_in = (z_const unsigned char *) buf;
+        state->strm.next_in = (z_const unsigned char *)buf;
         do {
             unsigned n = (unsigned)-1;
             if (n > len)
                 n = (unsigned)len;
             state->strm.avail_in = n;
+            int ret = gz_comp(state, Z_NO_FLUSH);
+            n -= state->strm.avail_in;
             state->x.pos += n;
-            if (gz_comp(state, Z_NO_FLUSH) == -1)
-                return 0;
             len -= n;
+            if (ret == -1) {
+                state->strm.avail_in = 0;
+                state->strm.next_in = state->in;
+                return 0;
+            }
         } while (len);
     }
 
