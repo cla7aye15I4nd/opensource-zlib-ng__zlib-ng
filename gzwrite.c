@@ -456,6 +456,14 @@ z_int32_t Z_EXPORTVA PREFIX(gzvprintf)(gzFile file, const char *format, va_list 
 
     /* write out buffer if more than half is occupied */
     ret = gz_vacate(state);
+    if (ret) {
+        /* discard unwritten formatted output */
+        strm->avail_in -= (unsigned)len;
+        state->x.pos -= len;
+        if (state->again)
+            PREFIX(gz_error)(state, Z_BUF_ERROR, "stalled write on gzprintf");
+        return state->err;
+    }
     if (state->err && !state->again)
         return state->err;
     return len;

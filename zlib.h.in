@@ -1529,7 +1529,7 @@ Z_EXTERN int Z_EXPORTVA gzprintf(gzFile file, const char *format, ...);
    This can be determined using zlibCompileFlags().
 
      If a Z_BUF_ERROR is returned, then nothing was written due to a stall on
-   the non-blocking write destination.
+   the non-blocking write destination. The operation can be retried.
 */
 
 Z_EXTERN int Z_EXPORT gzputs(gzFile file, const char *s);
