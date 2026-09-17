@@ -73,7 +73,7 @@ static int gz_comp(gz_state *state, int flush) {
             put = strm->avail_in > max ? max : strm->avail_in;
             got = write(state->fd, strm->next_in, put);
             if (got < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                if (BLOCKED(errno))
                     state->again = 1;
                 PREFIX(gz_error)(state, Z_ERRNO, zstrerror());
                 return -1;
@@ -106,7 +106,7 @@ static int gz_comp(gz_state *state, int flush) {
                 put = strm->next_out - state->x.next > (int)max ? max : (unsigned)(strm->next_out - state->x.next);
                 got = write(state->fd, state->x.next, put);
                 if (got < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    if (BLOCKED(errno))
                         state->again = 1;
                     PREFIX(gz_error)(state, Z_ERRNO, zstrerror());
                     return -1;

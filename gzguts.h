@@ -77,6 +77,20 @@
 #  define zstrerror() "stdio error (consult errno)"
 #endif
 
+#ifdef EAGAIN
+#  ifdef EWOULDBLOCK
+#    define BLOCKED(e) ((e) == EAGAIN || (e) == EWOULDBLOCK)
+#  else
+#    define BLOCKED(e) ((e) == EAGAIN)
+#  endif
+#else
+#  ifdef EWOULDBLOCK
+#    define BLOCKED(e) ((e) == EWOULDBLOCK)
+#  else
+#    define BLOCKED(e) (0)
+#  endif
+#endif
+
 /* default memLevel */
 #if MAX_MEM_LEVEL >= 8
 #  define DEF_MEM_LEVEL 8

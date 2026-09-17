@@ -62,7 +62,7 @@ static int gz_load(gz_state *state, unsigned char *buf, unsigned len, unsigned *
         *have += (unsigned)ret;
     } while (*have < len);
     if (ret < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (BLOCKED(errno)) {
             state->again = 1;
             if (*have != 0)
                 return 0;
