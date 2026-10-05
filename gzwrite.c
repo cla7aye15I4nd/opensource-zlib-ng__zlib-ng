@@ -125,7 +125,7 @@ static int gz_comp(gz_state *state, int flush) {
 /* Compress state->skip (> 0) zeros to output.  Return -1 on a write error or
    memory allocation failure by gz_comp(), or 0 on success. */
 static int gz_zero(gz_state *state) {
-    int first;
+    int first, ret;
     unsigned n;
     PREFIX3(stream) *strm = &(state->strm);
 
@@ -149,10 +149,18 @@ static int gz_zero(gz_state *state) {
         }
         strm->avail_in = n;
         strm->next_in = state->in;
+        ret = gz_comp(state, Z_NO_FLUSH);
+        n -= strm->avail_in;
         state->x.pos += n;
-        if (gz_comp(state, Z_NO_FLUSH) == -1)
-            return -1;
         state->skip -= n;
+        if (ret == -1) {
+            /* discard any unconsumed zero fill -- it was not yet accounted
+               for in state->skip, so it will be generated again when the
+               operation is retried */
+            strm->avail_in = 0;
+            strm->next_in = state->in;
+            return -1;
+        }
     } while (state->skip);
     return 0;
 }
