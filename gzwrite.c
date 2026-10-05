@@ -149,10 +149,15 @@ static int gz_zero(gz_state *state) {
         }
         strm->avail_in = n;
         strm->next_in = state->in;
+        int ret = gz_comp(state, Z_NO_FLUSH);
+        n -= strm->avail_in;
         state->x.pos += n;
-        if (gz_comp(state, Z_NO_FLUSH) == -1)
-            return -1;
         state->skip -= n;
+        if (ret == -1) {
+            strm->avail_in = 0;
+            strm->next_in = state->in;
+            return -1;
+        }
     } while (state->skip);
     return 0;
 }
