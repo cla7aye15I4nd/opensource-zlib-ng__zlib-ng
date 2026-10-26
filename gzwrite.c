@@ -26,6 +26,8 @@ static int gz_write_init(gz_state *state) {
         return -1;
     }
 
+    strm->next_in = NULL;
+
     /* only need deflate state if compressing */
     if (!state->direct) {
         /* allocate deflate memory, set up for gzip compression */
@@ -39,8 +41,6 @@ static int gz_write_init(gz_state *state) {
             }
             return -1;
         }
-        strm->next_in = NULL;
-
         /* initialize write buffer */
         strm->avail_out = state->size;
         strm->next_out = state->out;
@@ -217,6 +217,7 @@ static size_t gz_write(gz_state *state, void const *buf, size_t len) {
                 return 0;
             }
         } while (len);
+        state->strm.next_in = state->in;
     }
 
     /* input was all buffered or compressed */
