@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -319,4 +320,82 @@ TEST(inflate_back_distance, match_inside_output) {
     EXPECT_EQ(decoded[1], 0xa5);
     EXPECT_EQ(decoded[2], 0xa5);
     EXPECT_EQ(decoded[3], 0xa5);
+}
+
+/* inflateBack() decodes into the caller's window, so inflate_fast() copies a match that reaches into the
+ * previous pass of the window within that one buffer, and source and destination can overlap. Each stream is
+ * one fixed Huffman block: 2^wbits + k literals, a match of length len at distance dist, then 40 literals. */
+TEST(inflate_back_window, overlapping_window_copy) {
+    struct {
+        int wbits;
+        unsigned k, dist, len;
+    } const cases[] = {
+        {8, 100, 200, 150}, {8, 100, 250, 100}, {8, 100, 256, 100}, {8, 3, 255, 10},
+        {9, 10, 400, 258}, {15, 1000, 32700, 200}, {15, 1000, 32768, 258}
+    };
+    for (const auto &c : cases) {
+        SCOPED_TRACE(testing::Message() << "wbits " << c.wbits << ", k " << c.k << ", dist " << c.dist
+                                        << ", len " << c.len);
+        const unsigned wsize = 1U << c.wbits;
+        std::vector<uint8_t> comp, expect;
+        uint64_t acc = 0;
+        int nacc = 0;
+        auto put = [&](uint32_t v, int n) {
+            acc |= (uint64_t)v << nacc;
+            nacc += n;
+            for (; nacc >= 8; nacc -= 8, acc >>= 8)
+                comp.push_back((uint8_t)acc);
+        };
+        auto huff = [&](uint32_t code, int n) {  /* Huffman codes go most significant bit first */
+            for (int i = n - 1; i >= 0; i--)
+                put((code >> i) & 1, 1);
+        };
+        auto lit = [&](uint8_t v) {
+            if (v < 144)
+                huff(0x30 + v, 8);
+            else
+                huff(0x190 + v - 144, 9);
+            expect.push_back(v);
+        };
+        static const uint32_t lbase[] = {3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59,
+                                         67, 83, 99, 115, 131, 163, 195, 227, 258};
+        static const uint32_t dbase[] = {1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513,
+                                         769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+
+        put(1, 1);  /* last block */
+        put(1, 2);  /* fixed codes */
+        for (unsigned i = 0; i < wsize + c.k; i++)
+            lit((uint8_t)(i * 7 + i / 251));
+        int lc = 28;
+        while (lbase[lc] > c.len)
+            lc--;
+        if (lc < 23)
+            huff((uint32_t)lc + 1, 7);           /* codes 257..279 */
+        else
+            huff(0xc0 + (uint32_t)lc - 23, 8);   /* codes 280..285 */
+        put(c.len - lbase[lc], lc < 8 || lc == 28 ? 0 : (lc - 4) / 4);
+        int dc = 29;
+        while (dbase[dc] > c.dist)
+            dc--;
+        huff((uint32_t)dc, 5);
+        put(c.dist - dbase[dc], dc < 4 ? 0 : dc / 2 - 1);
+        for (unsigned i = 0; i < c.len; i++)
+            expect.push_back(expect[expect.size() - c.dist]);
+        for (int i = 0; i < 40; i++)
+            lit('A');
+        huff(0, 7);  /* end of block */
+        if (nacc)
+            comp.push_back((uint8_t)acc);
+
+        std::vector<uint8_t> window(wsize), out(expect.size());
+        struct output_state out_state = {out.data(), out.size(), 0};
+        PREFIX3(stream) strm = {};
+        ASSERT_EQ(PREFIX(inflateBackInit)(&strm, c.wbits, window.data()), Z_OK);
+        strm.next_in = comp.data();
+        strm.avail_in = (uint32_t)comp.size();
+        EXPECT_EQ(PREFIX(inflateBack)(&strm, pull_all, &strm, push_all, &out_state), Z_STREAM_END);
+        EXPECT_EQ(PREFIX(inflateBackEnd)(&strm), Z_OK);
+        ASSERT_EQ(out_state.pos, expect.size());
+        EXPECT_EQ(memcmp(out.data(), expect.data(), expect.size()), 0);
+    }
 }

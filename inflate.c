@@ -1107,7 +1107,8 @@ int32_t Z_EXPORT PREFIX(inflate)(PREFIX3(stream) *strm, int32_t flush) {
                 copy = MIN(copy, state->length);
                 copy = MIN(copy, left);
 
-                put = chunkcopy_safe(put, from, copy, put + left);
+                memcpy(put, from, copy);    /* the window and the output are distinct objects */
+                put += copy;
             } else {
                 copy = MIN(state->length, left);
 
