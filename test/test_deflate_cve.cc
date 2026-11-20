@@ -99,3 +99,32 @@ INSTANTIATE_TEST_SUITE_P(deflate, cve_2018_25032, testing::ValuesIn(cve_2018_250
     [](const ::testing::TestParamInfo<cve_2018_25032_param> &info) {
         return std::string(info.param.name);
     });
+
+TEST(deflate_quick, fixed_block_across_large_input) {
+    if (getenv("ZLIB_NG_TEST_LARGE_FIXED_BLOCK") == NULL)
+        GTEST_SKIP() << "Processes more than 2 GiB of input";
+    static uint8_t input[1 << 20], output[1 << 20];
+    for (size_t i = 0; i < sizeof(input); i++)
+        input[i] = (uint8_t)(((i * 2654435761U) >> 24) & 3);
+
+    PREFIX3(stream) stream = {};
+    ASSERT_EQ(PREFIX(deflateInit2)(&stream, 1, Z_DEFLATED, MAX_WBITS, 8, Z_FIXED), Z_OK);
+    for (unsigned chunk = 0; chunk < 2052; chunk++) {
+        stream.next_in = input;
+        stream.avail_in = sizeof(input);
+        do {
+            stream.next_out = output;
+            stream.avail_out = sizeof(output);
+            ASSERT_EQ(PREFIX(deflate)(&stream, Z_NO_FLUSH), Z_OK);
+        } while (stream.avail_in);
+    }
+    int ret;
+    do {
+        stream.next_out = output;
+        stream.avail_out = sizeof(output);
+        ret = PREFIX(deflate)(&stream, Z_FINISH);
+    } while (ret == Z_OK);
+    EXPECT_EQ(ret, Z_STREAM_END);
+    EXPECT_EQ(stream.total_in, UINT64_C(2151677952));
+    EXPECT_EQ(PREFIX(deflateEnd)(&stream), Z_OK);
+}

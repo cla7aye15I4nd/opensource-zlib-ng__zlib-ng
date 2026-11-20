@@ -1271,7 +1271,9 @@ void Z_INTERNAL PREFIX(fill_window)(deflate_state *s) {
                 s->prev_length = 0;
             }
             s->strstart    -= slide_len; /* we now have strstart >= MAX_DIST */
-            s->block_start -= (int)slide_len;
+            /* Keep block_start >= -(2^30 + 2^16) so slides and strstart - block_start cannot overflow. */
+            if (s->block_start >= (int)slide_len - (1 << 30) - (1 << 16))
+                s->block_start -= (int)slide_len;
             s->fill_end    -= slide_len;
             if (s->insert > s->strstart)
                 s->insert = s->strstart;
