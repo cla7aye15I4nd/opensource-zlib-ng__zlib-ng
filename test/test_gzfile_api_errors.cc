@@ -1003,3 +1003,19 @@ TEST(gzfile_api_errors, setparams_direct_write) {
     EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
     remove("gzapi_err_setparams.gz");
 }
+
+#ifndef _WIN32
+TEST(gzfile_api_errors, gzip_buffer_allocation_failure) {
+    if (getenv("ZLIB_NG_TEST_GZ_ALLOC_LIMIT") == NULL)
+        GTEST_SKIP() << "Requires an allocator limit below 3 GiB";
+
+    gzFile file = PREFIX(gzopen)("/dev/null", "wb");
+    ASSERT_NE(file, (gzFile)NULL);
+    EXPECT_EQ(PREFIX(gzbuffer)(file, 1U << 30), Z_OK);
+    EXPECT_EQ(PREFIX(gzwrite)(file, "abc", 3), 0);
+    int err = Z_OK;
+    PREFIX(gzerror)(file, &err);
+    EXPECT_EQ(err, Z_MEM_ERROR);
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_MEM_ERROR);
+}
+#endif

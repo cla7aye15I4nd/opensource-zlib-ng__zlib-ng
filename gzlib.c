@@ -85,16 +85,13 @@ int Z_INTERNAL gz_buffer_alloc(gz_state *state) {
     }
 
     state->buffers = (unsigned char *)zng_alloc_aligned((in_size + out_size), 64);
-    state->in = state->buffers;
-    if (out_size) {
-        state->out = state->buffers + (in_size); // Outbuffer goes after inbuffer
-    }
-
-    /* Return error if memory allocation failed */
-    if (state->in == NULL || (out_size && state->out == NULL)) {
-        gz_buffer_free(state);
+    if (state->buffers == NULL) {
         PREFIX(gz_error)(state, Z_MEM_ERROR, "out of memory");
         return -1;
+    }
+    state->in = state->buffers;
+    if (out_size) {
+        state->out = state->buffers + in_size; // Outbuffer goes after inbuffer
     }
 
     state->size = want; // mark state as initialized
