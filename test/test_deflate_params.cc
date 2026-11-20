@@ -282,3 +282,95 @@ TEST(deflate, params_from_stored) {
         }
     }
 }
+
+static void verify_stale_prev_after_reset(uint32_t seed, bool use_reset) {
+    uint64_t state = (uint64_t)seed * 7919ULL + 3ULL;
+    auto rnd = [&state]() -> unsigned {
+        state = state * UINT64_C(6364136223846793005) + UINT64_C(1442695040888963407);
+        return (unsigned)(state >> 33);
+    };
+    static uint8_t a[70000], b[70000], decoded[140000], compressed[1 << 18];
+    int la = 2 + rnd() % 5, lb = 7 + rnd() % 2, alpha1 = 2 + rnd() % 6, alpha2 = 2 + rnd() % 4;
+    (void)rnd();
+    size_t na = 33000 + rnd() % 31000, nb = 34000 + rnd() % 30000, sa = 2000 + rnd() % 20000;
+    for (size_t k = 0; k < na; k++)
+        a[k] = 'a' + rnd() % alpha1;
+    size_t k = 0;
+    while (k < sa) {
+        size_t run = 300 + rnd() % 3000, txt = 10 + rnd() % 300;
+        int per = 1 + rnd() % 12;
+        unsigned char pat[16];
+        for (int j = 0; j < per; j++)
+            pat[j] = 'a' + rnd() % alpha2;
+        for (size_t j = 0; j < run && k < sa; j++)
+            b[k++] = pat[j % per];
+        for (size_t j = 0; j < txt && k < sa; j++)
+            b[k++] = 'a' + rnd() % alpha2;
+    }
+    while (k < nb) {
+        int kind = rnd() % 3;
+        if (kind == 0) {
+            size_t off = rnd() % sa, len = 4 + rnd() % 8;
+            for (size_t j = 0; j < len && k < nb; j++)
+                b[k++] = b[off + j];
+            if (k < nb)
+                b[k++] = 'a' + rnd() % (alpha2 + 1);
+        } else if (kind == 1) {
+            size_t len = 1 + rnd() % 40;
+            for (size_t j = 0; j < len && k < nb; j++)
+                b[k++] = 'a' + rnd() % alpha2;
+        } else {
+            size_t off = rnd() % k, len = 3 + rnd() % 30;
+            for (size_t j = 0; j < len && k < nb; j++, k++)
+                b[k] = b[off + j];
+        }
+    }
+    PREFIX3(stream) stream = {};
+    ASSERT_EQ(PREFIX(deflateInit2)(&stream, la, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY), Z_OK);
+    stream.next_out = compressed;
+    stream.avail_out = sizeof(compressed);
+    stream.next_in = a;
+    stream.avail_in = (uint32_t)na;
+    if (use_reset) {
+        EXPECT_EQ(PREFIX(deflate)(&stream, Z_NO_FLUSH), Z_OK);
+        EXPECT_EQ(PREFIX(deflateReset)(&stream), Z_OK);
+        stream.next_out = compressed;
+        stream.avail_out = sizeof(compressed);
+    } else {
+        EXPECT_EQ(PREFIX(deflate)(&stream, Z_FULL_FLUSH), Z_OK);
+    }
+    stream.next_in = b;
+    stream.avail_in = (uint32_t)sa;
+    EXPECT_EQ(PREFIX(deflate)(&stream, Z_NO_FLUSH), Z_OK);
+    EXPECT_EQ(PREFIX(deflateParams)(&stream, lb, Z_DEFAULT_STRATEGY), Z_OK);
+    stream.next_in = b + sa;
+    stream.avail_in = (uint32_t)(nb - sa);
+    EXPECT_EQ(PREFIX(deflate)(&stream, Z_FINISH), Z_STREAM_END);
+    uint32_t compressed_len = (uint32_t)stream.total_out;
+    EXPECT_EQ(PREFIX(deflateEnd)(&stream), Z_OK);
+
+    PREFIX3(stream) decoder = {};
+    ASSERT_EQ(PREFIX(inflateInit2)(&decoder, -MAX_WBITS), Z_OK);
+    decoder.next_in = compressed;
+    decoder.avail_in = compressed_len;
+    decoder.next_out = decoded;
+    decoder.avail_out = sizeof(decoded);
+    EXPECT_EQ(PREFIX(inflate)(&decoder, Z_FINISH), Z_STREAM_END);
+    if (use_reset) {
+        ASSERT_EQ(decoder.total_out, nb);
+        EXPECT_EQ(memcmp(decoded, b, nb), 0);
+    } else {
+        ASSERT_EQ(decoder.total_out, na + nb);
+        EXPECT_EQ(memcmp(decoded, a, na), 0);
+        EXPECT_EQ(memcmp(decoded + na, b, nb), 0);
+    }
+    EXPECT_EQ(PREFIX(inflateEnd)(&decoder), Z_OK);
+}
+
+TEST(deflate, changes_level_after_full_flush) {
+    verify_stale_prev_after_reset(362, false);
+}
+
+TEST(deflate, changes_level_after_reset) {
+    verify_stale_prev_after_reset(303, true);
+}

@@ -153,10 +153,11 @@ static const config configuration_table[10] = {
 
 
 /* ===========================================================================
- * Initialize the hash table. prev[] will be initialized on the fly.
+ * Initialize the hash table and previous-position chains.
  */
 #define CLEAR_HASH(s) do { \
     memset((unsigned char *)s->head, 0, HASH_SIZE * sizeof(*s->head)); \
+    memset((unsigned char *)s->prev, 0, (s)->w_size * sizeof(*(s)->prev)); \
   } while (0)
 
 /* Configurations that never read the hash table. When deflateParams() switches
