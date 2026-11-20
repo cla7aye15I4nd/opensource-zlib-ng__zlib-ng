@@ -29,3 +29,75 @@ TEST(inflate, copy_back_and_forth) {
     err = PREFIX(inflateEnd)(&d2_stream);
     ASSERT_EQ(err, Z_OK);
 }
+
+/* Copy an inflate stream half way through a block, for both fixed (static
+ * table) and dynamic (state->codes) blocks, and check that both the original
+ * and the copy finish with the right output. */
+static void inflate_copy_midstream(int strategy) {
+    PREFIX3(stream) cstrm, d1, d2;
+    static uint8_t in[4096], comp[8192], out1[sizeof(in)], out2[sizeof(in)];
+    uint32_t i, comp_len, produced;
+    uint32_t rng = 0x12345678U;
+    static uint8_t seen[32768];
+    memset(seen, 0, sizeof(seen));
+
+    for (i = 0; i < sizeof(in); i++) {
+        rng = rng * 1664525U + 1013904223U;
+        uint32_t sym = (rng >> 24) & 31U;
+        if (i >= 2) {
+            uint32_t p2 = (uint32_t)(in[i - 2] - 'a');
+            uint32_t p1 = (uint32_t)(in[i - 1] - 'a');
+            while (seen[(p2 << 10) | (p1 << 5) | sym])
+                sym = (sym + 1U) & 31U;
+            seen[(p2 << 10) | (p1 << 5) | sym] = 1;
+        }
+        in[i] = (uint8_t)('a' + sym);
+    }
+
+    memset(&cstrm, 0, sizeof(cstrm));
+    ASSERT_EQ(PREFIX(deflateInit2)(&cstrm, Z_BEST_COMPRESSION, Z_DEFLATED, MAX_WBITS, MAX_MEM_LEVEL, strategy), Z_OK);
+    cstrm.next_in = in;
+    cstrm.avail_in = sizeof(in);
+    cstrm.next_out = comp;
+    cstrm.avail_out = sizeof(comp);
+    ASSERT_EQ(PREFIX(deflate)(&cstrm, Z_FINISH), Z_STREAM_END);
+    comp_len = (uint32_t)cstrm.total_out;
+    ASSERT_EQ(PREFIX(deflateEnd)(&cstrm), Z_OK);
+
+    memset(&d1, 0, sizeof(d1));
+    ASSERT_EQ(PREFIX(inflateInit2)(&d1, MAX_WBITS), Z_OK);
+    d1.next_in = comp;
+    d1.avail_in = comp_len;
+    d1.next_out = out1;
+    d1.avail_out = sizeof(out1) / 2;
+    ASSERT_EQ(PREFIX(inflate)(&d1, Z_NO_FLUSH), Z_OK);
+    ASSERT_GT(d1.total_out, 0U);
+    ASSERT_LT(d1.total_out, sizeof(in));
+
+    ASSERT_EQ(PREFIX(inflateCopy)(&d2, &d1), Z_OK);
+    produced = (uint32_t)d1.total_out;
+    memcpy(out2, out1, produced);
+
+    d1.avail_out = sizeof(out1) - produced;
+    ASSERT_EQ(PREFIX(inflate)(&d1, Z_FINISH), Z_STREAM_END);
+    ASSERT_EQ(d1.total_out, sizeof(in));
+    ASSERT_EQ(PREFIX(inflateEnd)(&d1), Z_OK);
+
+    /* The copy must not depend on the original anymore. */
+    d2.next_out = out2 + produced;
+    d2.avail_out = sizeof(out2) - produced;
+    ASSERT_EQ(PREFIX(inflate)(&d2, Z_FINISH), Z_STREAM_END);
+    ASSERT_EQ(d2.total_out, sizeof(in));
+    ASSERT_EQ(PREFIX(inflateEnd)(&d2), Z_OK);
+
+    EXPECT_EQ(memcmp(in, out1, sizeof(in)), 0);
+    EXPECT_EQ(memcmp(in, out2, sizeof(in)), 0);
+}
+
+TEST(inflate, copy_midstream_fixed) {
+    inflate_copy_midstream(Z_FIXED);
+}
+
+TEST(inflate, copy_midstream_dynamic) {
+    inflate_copy_midstream(Z_DEFAULT_STRATEGY);
+}
