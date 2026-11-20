@@ -20,7 +20,7 @@
  */
 Z_INTERNAL block_state deflate_fast(deflate_state *s, int flush) {
     unsigned char *window = s->window;
-    uint32_t max_inserts = MAX(2, s->max_insert_count); // spread insert requires min 2
+    uint32_t max_inserts = MIN(MAX(2U, s->max_insert_count), STD_MAX_MATCH); // spread/stepped insert requires 2..258
     int bflush = 0;       /* set if current block must be flushed */
     uint32_t match_len = 0;
 

@@ -54,3 +54,30 @@ TEST(deflate, tune) {
     err = PREFIX(deflateEnd)(&c_stream);
     EXPECT_EQ(err, Z_OK);
 }
+
+TEST(deflate, tune_stepped_insert_count) {
+    uint8_t input[4096], compressed[8192], output[sizeof(input)];
+    memset(input, 'a', sizeof(input));
+
+    const int levels[] = {2, 4, 6};
+    const int32_t max_lazies[] = {INT32_MIN, 0, 1, 258, 100000};
+    for (int level : levels) {
+        for (int32_t max_lazy : max_lazies) {
+            PREFIX3(stream) stream = {};
+            ASSERT_EQ(PREFIX(deflateInit)(&stream, level), Z_OK);
+            EXPECT_EQ(PREFIX(deflateTune)(&stream, 8, max_lazy, 128, 128), Z_OK);
+            stream.next_in = input;
+            stream.avail_in = sizeof(input);
+            stream.next_out = compressed;
+            stream.avail_out = sizeof(compressed);
+            EXPECT_EQ(PREFIX(deflate)(&stream, Z_FINISH), Z_STREAM_END);
+            z_size_t compressed_len = stream.total_out;
+            EXPECT_EQ(PREFIX(deflateEnd)(&stream), Z_OK);
+
+            z_uintmax_t output_len = sizeof(output);
+            ASSERT_EQ(PREFIX(uncompress)(output, &output_len, compressed, (z_uintmax_t)compressed_len), Z_OK);
+            EXPECT_EQ((size_t)output_len, sizeof(input));
+            EXPECT_EQ(memcmp(input, output, sizeof(input)), 0);
+        }
+    }
+}
