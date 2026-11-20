@@ -10,6 +10,12 @@
 
 #include "insert_string_p.h"
 
+#ifdef LONGEST_MATCH_SLOW
+#  define MATCH_POS(m) ((m) - match_offset)
+#else
+#  define MATCH_POS(m) (m)
+#endif
+
 #define GOTO_NEXT_CHAIN \
     if (--chain_length && (cur_match = prev[cur_match & wmask]) > limit) \
         continue; \
@@ -130,8 +136,6 @@ Z_INTERNAL uint32_t LONGEST_MATCH(deflate_state *const s, uint32_t cur_match) {
         limit = limit_base+match_offset;
         if (UNLIKELY(cur_match <= limit))
             return best_len;
-        mbase_start -= match_offset;
-        mbase_end -= match_offset;
     }
 #endif
     Assert(strstart <= s->fill_end, "need lookahead");
@@ -148,7 +152,7 @@ Z_INTERNAL uint32_t LONGEST_MATCH(deflate_state *const s, uint32_t cur_match) {
          */
         uint32_t len;
         if (best_len < sizeof(uint64_t)) {
-            uint64_t cand_start = zng_memread_8(mbase_start + cur_match);
+            uint64_t cand_start = zng_memread_8(mbase_start + MATCH_POS(cur_match));
             if (scan_start != cand_start) {
                 /* Peel the first candidate out of the loop. A full 8-byte match falls straight
                  * through to compare256, and single-candidate chains (barely-compressible data)
@@ -163,7 +167,7 @@ Z_INTERNAL uint32_t LONGEST_MATCH(deflate_state *const s, uint32_t cur_match) {
                 }
                 if (--chain_length == 0 || (cur_match = prev[cur_match & wmask]) <= limit)
                     return best_len;
-                cand_start = zng_memread_8(mbase_start + cur_match);
+                cand_start = zng_memread_8(mbase_start + MATCH_POS(cur_match));
                 if (scan_start != cand_start) {
                     /* Walk the remaining candidates with the chain advance kept inline. */
                     for (;;) {
@@ -174,7 +178,7 @@ Z_INTERNAL uint32_t LONGEST_MATCH(deflate_state *const s, uint32_t cur_match) {
                         }
                         if (--chain_length == 0 || (cur_match = prev[cur_match & wmask]) <= limit)
                             return best_len;
-                        cand_start = zng_memread_8(mbase_start + cur_match);
+                        cand_start = zng_memread_8(mbase_start + MATCH_POS(cur_match));
                         if (scan_start == cand_start)
                             break;
                     }
@@ -187,14 +191,14 @@ Z_INTERNAL uint32_t LONGEST_MATCH(deflate_state *const s, uint32_t cur_match) {
             for (;;) {
                 /* First check the end of the candidate at best_len+1 due to the higher
                  * likelihood of a mismatch. */
-                if (zng_memcmp_8(mbase_end+cur_match, &scan_end) == 0 &&
-                    zng_memcmp_8(mbase_start+cur_match, &scan_start) == 0)
+                if (zng_memcmp_8(mbase_end + MATCH_POS(cur_match), &scan_end) == 0 &&
+                    zng_memcmp_8(mbase_start + MATCH_POS(cur_match), &scan_start) == 0)
                     break;
                 GOTO_NEXT_CHAIN;
             }
         }
 
-        len = COMPARE256(scan+2, mbase_start+cur_match+2) + 2;
+        len = COMPARE256(scan + 2, mbase_start + MATCH_POS(cur_match) + 2) + 2;
         Assert(scan+len <= window+(unsigned)(s->window_size-1), "wild scan");
 
         if (len > best_len)
@@ -284,7 +288,6 @@ short_match_accept:
 
                 /* Update offset-dependent variables */
                 limit = limit_base+match_offset;
-                mbase_start = window-match_offset;
                 mbase_end = (mbase_start+offset);
                 continue;
             }
@@ -299,3 +302,5 @@ short_match_accept:
 #undef LONGEST_MATCH_SLOW
 #undef LONGEST_MATCH_SLOW_ROLL
 #undef LONGEST_MATCH
+
+#undef MATCH_POS

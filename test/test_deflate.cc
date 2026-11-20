@@ -158,3 +158,43 @@ INSTANTIATE_TEST_SUITE_P(deflate_small_window, deflate_variant,
         testing::Values(Z_DEFAULT_STRATEGY)                     /* strategy */
     ),
     deflate_test_name);
+
+TEST(deflate, slow_match_offset_round_trip) {
+    const uint32_t seed = 261107360U;
+    uint32_t x = seed | 1U;
+    const size_t n = 70000;
+    static uint8_t in[n], out[2 * n + 1000], decoded[n];
+    static const char alpha[] = "etaoin shrdlu\n";
+    for (size_t i = 0; i < n; i++) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        switch ("rtpz"[(i / 1000) % 4]) {
+        case 'r':
+            in[i] = (unsigned char)(x & 0xff);
+            break;
+        case 't':
+            in[i] = (unsigned char)alpha[x % 14];
+            break;
+        case 'p':
+            in[i] = (unsigned char)((i % (1 + seed % 61)) * 7 + 3);
+            break;
+        default:
+            in[i] = 0;
+        }
+    }
+    PREFIX3(stream) stream = {};
+    ASSERT_EQ(PREFIX(deflateInit2)(&stream, 9, Z_DEFLATED, MAX_WBITS, 4, Z_FILTERED), Z_OK);
+    stream.next_in = in;
+    stream.avail_in = sizeof(in);
+    stream.next_out = out;
+    stream.avail_out = sizeof(out);
+    EXPECT_EQ(PREFIX(deflate)(&stream, Z_FINISH), Z_STREAM_END);
+    z_size_t compressed_len = stream.total_out;
+    EXPECT_EQ(PREFIX(deflateEnd)(&stream), Z_OK);
+
+    z_uintmax_t decoded_len = sizeof(decoded);
+    ASSERT_EQ(PREFIX(uncompress)(decoded, &decoded_len, out, (z_uintmax_t)compressed_len), Z_OK);
+    EXPECT_EQ((size_t)decoded_len, sizeof(in));
+    EXPECT_EQ(memcmp(decoded, in, sizeof(in)), 0);
+}
