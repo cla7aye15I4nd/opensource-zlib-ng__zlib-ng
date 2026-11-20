@@ -97,3 +97,51 @@ TEST_P(deflate_bound_variant, estimate) {
 }
 
 INSTANTIATE_TEST_SUITE_P(deflate_bound, deflate_bound_variant, testing::ValuesIn(tests));
+
+#ifndef TEST_STOCK_ZLIB
+TEST(deflate_bound, gzip_extra_len_truncated) {
+    uint8_t extra[0xffff];
+    memset(extra, 'e', sizeof(extra));
+
+    PREFIX(gz_header) header = {};
+    header.os = 3;
+    header.extra = extra;
+
+    const uint32_t max_u32_len = UINT32_MAX;
+    header.extra_len = 0xffff;
+    PREFIX3(stream) stream = {};
+    ASSERT_EQ(PREFIX(deflateInit2)(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, MAX_WBITS + 16, MAX_MEM_LEVEL, Z_DEFAULT_STRATEGY), Z_OK);
+    ASSERT_EQ(PREFIX(deflateSetHeader)(&stream, &header), Z_OK);
+    z_size_t bound_16bit = PREFIX(deflateBound)(&stream, 0);
+    EXPECT_EQ(PREFIX(deflateEnd)(&stream), Z_OK);
+
+    header.extra_len = max_u32_len;
+    memset(&stream, 0, sizeof(stream));
+    ASSERT_EQ(PREFIX(deflateInit2)(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, MAX_WBITS + 16, MAX_MEM_LEVEL, Z_DEFAULT_STRATEGY), Z_OK);
+    ASSERT_EQ(PREFIX(deflateSetHeader)(&stream, &header), Z_OK);
+    z_size_t bound_u32max = PREFIX(deflateBound)(&stream, 0);
+    EXPECT_EQ(bound_u32max, bound_16bit);
+
+    uint8_t *out = (uint8_t *)malloc(bound_u32max);
+    ASSERT_NE(out, nullptr);
+    stream.next_out = out;
+    stream.avail_out = (uint32_t)bound_u32max;
+    EXPECT_EQ(PREFIX(deflate)(&stream, Z_FINISH), Z_STREAM_END);
+    free(out);
+    EXPECT_EQ(PREFIX(deflateEnd)(&stream), Z_OK);
+
+    header.extra_len = 0x10000;
+    memset(&stream, 0, sizeof(stream));
+    ASSERT_EQ(PREFIX(deflateInit2)(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, MAX_WBITS + 16, MAX_MEM_LEVEL, Z_DEFAULT_STRATEGY), Z_OK);
+    ASSERT_EQ(PREFIX(deflateSetHeader)(&stream, &header), Z_OK);
+    z_size_t bound_64k = PREFIX(deflateBound)(&stream, 0);
+    EXPECT_EQ(PREFIX(deflateEnd)(&stream), Z_OK);
+
+    header.extra_len = 0;
+    memset(&stream, 0, sizeof(stream));
+    ASSERT_EQ(PREFIX(deflateInit2)(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, MAX_WBITS + 16, MAX_MEM_LEVEL, Z_DEFAULT_STRATEGY), Z_OK);
+    ASSERT_EQ(PREFIX(deflateSetHeader)(&stream, &header), Z_OK);
+    EXPECT_EQ(bound_64k, PREFIX(deflateBound)(&stream, 0));
+    EXPECT_EQ(PREFIX(deflateEnd)(&stream), Z_OK);
+}
+#endif
