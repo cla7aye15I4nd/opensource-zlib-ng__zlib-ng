@@ -1003,3 +1003,47 @@ TEST(gzfile_api_errors, setparams_direct_write) {
     EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
     remove("gzapi_err_setparams.gz");
 }
+
+#ifndef _WIN32
+/* A failed large direct gzwrite must not leave strm.next_in pointing at the
+ * freed caller buffer for a subsequent gzclose() or gzclearerr() + gzwrite(). */
+TEST(gzfile_api_errors, write_failed_direct_close) {
+    int fd = open("/dev/null", O_RDONLY);
+    ASSERT_GE(fd, 0);
+    gzFile file = PREFIX(gzdopen)(fd, "wbT");
+    if (file == NULL)
+        close(fd);
+    ASSERT_NE(file, (gzFile)NULL);
+
+    EXPECT_EQ(PREFIX(gzbuffer)(file, 8), Z_OK);
+    char *buf = (char *)malloc(100);
+    ASSERT_NE(buf, nullptr);
+    memset(buf, 'a', 100);
+    EXPECT_EQ(PREFIX(gzwrite)(file, buf, 100), 0);
+    free(buf);
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_ERRNO);
+}
+
+TEST(gzfile_api_errors, write_failed_direct_clearerr) {
+    int fd = open("/dev/null", O_RDONLY);
+    ASSERT_GE(fd, 0);
+    gzFile file = PREFIX(gzdopen)(fd, "wbT");
+    if (file == NULL)
+        close(fd);
+    ASSERT_NE(file, (gzFile)NULL);
+
+    EXPECT_EQ(PREFIX(gzbuffer)(file, 8), Z_OK);
+    char *buf = (char *)malloc(100);
+    ASSERT_NE(buf, nullptr);
+    memset(buf, 'a', 100);
+    EXPECT_EQ(PREFIX(gzwrite)(file, buf, 100), 0);
+    free(buf);
+    int err = Z_OK;
+    PREFIX(gzerror)(file, &err);
+    EXPECT_EQ(err, Z_ERRNO);
+
+    PREFIX(gzclearerr)(file);
+    EXPECT_EQ(PREFIX(gzwrite)(file, "x", 1), 1);
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_ERRNO);
+}
+#endif
