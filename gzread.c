@@ -588,7 +588,8 @@ z_int32_t Z_EXPORT PREFIX(gzdirect)(gzFile file) {
        mainly for right after a gzopen() or gzdopen()) */
     if (state->mode == GZ_READ && state->how == LOOK && state->x.have == 0) {
         (void)gz_look(state);
-        gz_skip_have(state);        /* apply skip to current buffer */
+        if (state->x.have && state->skip)
+            gz_skip_have(state);    /* apply skip to current buffer */
     }
 
     /* return 1 if transparent, 0 if processing a gzip stream */

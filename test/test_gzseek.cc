@@ -62,3 +62,41 @@ TEST(gzip, seek) {
     PREFIX(gzclose)(file);
 #endif
 }
+
+TEST(gzip, direct_read_keeps_pending_seek) {
+    const char *path = "seek_direct_pending.txt";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NE(fp, nullptr);
+    ASSERT_EQ(fwrite("abcde", 1, 5, fp), 5U);
+    ASSERT_EQ(fclose(fp), 0);
+
+    gzFile file = PREFIX(gzopen)(path, "rb");
+    ASSERT_NE(file, (gzFile)NULL);
+    EXPECT_EQ(PREFIX(gzseek)(file, 3, SEEK_SET), 3);
+    EXPECT_EQ(PREFIX(gzdirect)(file), 1);
+    EXPECT_EQ(PREFIX(gzgetc)(file), 'd');
+    EXPECT_EQ(PREFIX(gztell)(file), 4);
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
+
+    /* Seeking near the signed limit before gzdirect() must also consume buffered
+       bytes so subsequent gzgetc() and gztell() do not overflow. */
+    const z_off64_t off_max =
+        (z_off64_t)((((uint64_t)1 << (sizeof(z_off64_t) * 8 - 2)) - 1) * 2 + 1);
+#if !defined(ZLIB_COMPAT) || defined(Z_LARGE64)
+    file = PREFIX(gzopen)(path, "rb");
+    ASSERT_NE(file, (gzFile)NULL);
+#  ifdef ZLIB_COMPAT
+    EXPECT_EQ(PREFIX4(gzseek)(file, off_max, SEEK_SET), off_max);
+    EXPECT_EQ(PREFIX(gzdirect)(file), 1);
+    EXPECT_EQ(PREFIX(gzgetc)(file), -1);
+    EXPECT_EQ(PREFIX4(gztell)(file), 5);
+#  else
+    EXPECT_EQ(PREFIX(gzseek)(file, off_max, SEEK_SET), off_max);
+    EXPECT_EQ(PREFIX(gzdirect)(file), 1);
+    EXPECT_EQ(PREFIX(gzgetc)(file), -1);
+    EXPECT_EQ(PREFIX(gztell)(file), 5);
+#  endif
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
+#endif
+    remove(path);
+}
