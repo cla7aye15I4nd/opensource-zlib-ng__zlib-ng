@@ -539,6 +539,11 @@ char * Z_EXPORT PREFIX(gzgets)(gzFile file, char *buf, z_int32_t len) {
     left = (unsigned)len - 1;
     if (left) {
         do {
+            /* return at end of input or pending seek instead of re-fetching */
+            if (state->x.have == 0 && (state->skip || (state->eof && state->strm.avail_in == 0))) {
+                state->past = 1;            /* read past end */
+                break;                      /* return what we have */
+            }
             /* assure that something is in the output buffer */
             if (state->x.have == 0 && gz_fetch(state) == -1)
                 return NULL;                /* error */

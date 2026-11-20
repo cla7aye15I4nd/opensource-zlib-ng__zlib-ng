@@ -62,3 +62,46 @@ TEST(gzip, seek) {
     PREFIX(gzclose)(file);
 #endif
 }
+
+TEST(gzip, gets_pending_skip_after_eof) {
+    const char *path = "seek_gets_eof_grow.txt";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NE(fp, nullptr);
+    ASSERT_EQ(fwrite("abc", 1, 3, fp), 3U);
+    ASSERT_EQ(fclose(fp), 0);
+
+    gzFile file = PREFIX(gzopen)(path, "rb");
+    ASSERT_NE(file, (gzFile)NULL);
+#if !defined(ZLIB_COMPAT) || defined(Z_LARGE64)
+    const z_off64_t off_max =
+        (z_off64_t)((((uint64_t)1 << (sizeof(z_off64_t) * 8 - 2)) - 1) * 2 + 1);
+#  ifdef ZLIB_COMPAT
+    EXPECT_EQ(PREFIX4(gzseek)(file, off_max, SEEK_SET), off_max);
+#  else
+    EXPECT_EQ(PREFIX(gzseek)(file, off_max, SEEK_SET), off_max);
+#  endif
+    /* Force execution of the pending seek to EOF. */
+    EXPECT_EQ(PREFIX(gzungetc)(-1, file), -1);
+#  ifdef ZLIB_COMPAT
+    EXPECT_EQ(PREFIX4(gztell)(file), 3);
+#  else
+    EXPECT_EQ(PREFIX(gztell)(file), 3);
+#  endif
+
+    /* Appending after EOF without gzclearerr() must not make gzgets() read pre-seek data. */
+    fp = fopen(path, "ab");
+    ASSERT_NE(fp, nullptr);
+    ASSERT_EQ(fwrite("de\n", 1, 3, fp), 3U);
+    ASSERT_EQ(fclose(fp), 0);
+
+    char buf[16];
+    EXPECT_EQ(PREFIX(gzgets)(file, buf, sizeof(buf)), nullptr);
+#  ifdef ZLIB_COMPAT
+    EXPECT_EQ(PREFIX4(gztell)(file), 3);
+#  else
+    EXPECT_EQ(PREFIX(gztell)(file), 3);
+#  endif
+#endif
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
+    remove(path);
+}
