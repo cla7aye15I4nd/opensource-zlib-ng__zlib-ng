@@ -184,3 +184,31 @@ TEST_P(inflate_far_distance, chunked_output) {
    the window copies of inflate_fast and of the slow path. */
 INSTANTIATE_TEST_SUITE_P(inflate, inflate_far_distance,
     ::testing::Values(0u, 1u, 7u, 64u, 300u, 1000u, 4096u, 16384u, 32767u));
+
+TEST(inflate, copies_matches_from_history_window) {
+    static uint8_t input[100000], compressed[200000], output[100000];
+    for (size_t i = 0; i < sizeof(input); i++)
+        input[i] = (uint8_t)("abcdefghij"[i % 10] + i / 5000);
+
+    z_uintmax_t compressed_len = sizeof(compressed);
+    ASSERT_EQ(PREFIX(compress2)(compressed, &compressed_len, input, sizeof(input), 6), Z_OK);
+
+    const uint32_t chunks[] = {1, 300};
+    for (uint32_t chunk : chunks) {
+        PREFIX3(stream) stream = {};
+        ASSERT_EQ(PREFIX(inflateInit)(&stream), Z_OK);
+        stream.next_in = compressed;
+        stream.avail_in = (uint32_t)compressed_len;
+        stream.next_out = output;
+        int ret;
+        do {
+            size_t remaining = sizeof(output) - stream.total_out;
+            stream.avail_out = remaining < chunk ? (uint32_t)remaining : chunk;
+            ret = PREFIX(inflate)(&stream, Z_NO_FLUSH);
+        } while (ret == Z_OK && stream.total_out < sizeof(output));
+        EXPECT_EQ(ret, Z_STREAM_END);
+        EXPECT_EQ(stream.total_out, sizeof(input));
+        EXPECT_EQ(memcmp(output, input, sizeof(input)), 0);
+        EXPECT_EQ(PREFIX(inflateEnd)(&stream), Z_OK);
+    }
+}

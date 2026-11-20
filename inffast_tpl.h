@@ -255,32 +255,60 @@ void Z_INTERNAL INFLATE_FAST(PREFIX3(stream) *strm, uint32_t start) {
                         from += wsize - op;
                         if (UNLIKELY(op < len)) {       /* some from end of window */
                             len -= op;
-                            out = CHUNKCOPY_SAFE(out, from, op, safe);
+#ifdef USE_SAFE_MODE
+                            if (window == beg) {
+                                out = CHUNKCOPY_SAFE(out, from, op, safe);
+                            } else {
+                                memcpy(out, from, op);
+                                out += op;
+                            }
+#else
+                            memcpy(out, from, op);
+                            out += op;
+#endif
                             from = window;              /* more from start of window */
                             op = wnext;
-                            /* This (rare) case can create a situation where
-                               the first chunkcopy below must be checked.
-                             */
                         }
                     }
                     if (UNLIKELY(op < len)) {           /* still need some from output */
                         len -= op;
 #ifndef USE_SAFE_MODE
-                        out = CHUNKCOPY_SAFE(out, from, op, safe);
+                        memcpy(out, from, op);
+                        out += op;
                         out = CHUNKUNROLL(out, &dist, &len);
                         out = CHUNKCOPY_SAFE(out, out - dist, len, safe);
 #elif defined(HAVE_MASKED_READWRITE)
-                        out = CHUNKCOPY_SAFE(out, from, op, safe);
+                        if (window == beg) {
+                            out = CHUNKCOPY_SAFE(out, from, op, safe);
+                        } else {
+                            memcpy(out, from, op);
+                            out += op;
+                        }
                         out = CHUNKCOPY_SAFE(out, out - dist, len, safe);
 #else
-                        out = chunkcopy_safe(out, from, op, safe);
+                        if (window == beg) {
+                            out = chunkcopy_safe(out, from, op, safe);
+                        } else {
+                            memcpy(out, from, op);
+                            out += op;
+                        }
                         out = chunkcopy_safe(out, out - dist, len, safe);
 #endif
                     } else {
-#if !defined(USE_SAFE_MODE) || defined(HAVE_MASKED_READWRITE)
-                        out = CHUNKCOPY_SAFE(out, from, len, safe);
+#ifndef USE_SAFE_MODE
+                        memcpy(out, from, len);
+                        out += len;
 #else
-                        out = chunkcopy_safe(out, from, len, safe);
+                        if (window == beg) {
+#  ifdef HAVE_MASKED_READWRITE
+                            out = CHUNKCOPY_SAFE(out, from, len, safe);
+#  else
+                            out = chunkcopy_safe(out, from, len, safe);
+#  endif
+                        } else {
+                            memcpy(out, from, len);
+                            out += len;
+                        }
 #endif
                     }
                 } else {

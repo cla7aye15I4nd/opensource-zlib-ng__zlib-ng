@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -319,4 +320,93 @@ TEST(inflate_back_distance, match_inside_output) {
     EXPECT_EQ(decoded[1], 0xa5);
     EXPECT_EQ(decoded[2], 0xa5);
     EXPECT_EQ(decoded[3], 0xa5);
+}
+
+/* Verify that inflateBack() handles wrapping window copies and full-window
+ * distances across all supported windowBits (8..15). */
+TEST_F(inflate_back, wrapping_window_overlap) {
+    struct FixedEncoder {
+        std::vector<uint8_t> comp;
+        std::vector<uint8_t> src;
+        uint32_t bitbuf = 0;
+        int bitcnt = 0;
+
+        void put_bits(uint32_t val, int n) {
+            bitbuf |= val << bitcnt;
+            bitcnt += n;
+            while (bitcnt >= 8) {
+                comp.push_back((uint8_t)(bitbuf & 0xff));
+                bitbuf >>= 8;
+                bitcnt -= 8;
+            }
+        }
+        void put_huff(uint32_t code, int n) {
+            for (int i = n - 1; i >= 0; i--)
+                put_bits((code >> i) & 1U, 1);
+        }
+        void lit(uint8_t b) {
+            if (b < 144)
+                put_huff(0x30U + b, 8);
+            else
+                put_huff(0x190U + (b - 144U), 9);
+            src.push_back(b);
+        }
+        void match32(uint32_t dist) {
+            /* Fixed Huffman length 32: code 272 (272 - 256 = 16 in 7b) + 1 in 2b. */
+            put_huff(16U, 7);
+            put_bits(1U, 2);
+            static const uint32_t dbase[30] = {
+                1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385,
+                513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577
+            };
+            int dc = 29;
+            while (dc > 0 && dbase[dc] > dist)
+                dc--;
+            put_huff((uint32_t)dc, 5);
+            int dext = dc < 4 ? 0 : (dc / 2 - 1);
+            if (dext)
+                put_bits(dist - dbase[dc], dext);
+            for (uint32_t i = 0; i < 32; i++)
+                src.push_back(src[src.size() - dist]);
+        }
+        void finish() {
+            put_huff(0U, 7); /* EOB (256) */
+            if (bitcnt > 0)
+                comp.push_back((uint8_t)(bitbuf & 0xff));
+        }
+    };
+
+    const int wbits_list[] = {8, 9, 15};
+    for (int wb : wbits_list) {
+        SCOPED_TRACE(testing::Message() << "wbits " << wb);
+        const uint32_t ws = 1U << wb;
+        FixedEncoder enc;
+        enc.put_bits(1U, 1); /* BFINAL = 1 */
+        enc.put_bits(1U, 2); /* BTYPE = 01 (fixed Huffman) */
+
+        uint32_t seq = 0;
+        for (uint32_t i = 0; i < ws + 4; i++)
+            enc.lit((uint8_t)((seq++ * 73U + 19U) & 0xffU));
+        enc.match32(20);
+        enc.match32(ws);
+        enc.match32(3);
+        while (enc.src.size() < ws * 2 - 24)
+            enc.lit((uint8_t)((seq++ * 73U + 19U) & 0xffU));
+        enc.match32(ws - 16);
+        for (uint32_t i = 0; i < 40; i++)
+            enc.lit((uint8_t)((seq++ * 73U + 19U) & 0xffU));
+        enc.finish();
+
+        std::vector<uint8_t> win(ws, 0x55);
+        std::vector<uint8_t> out(enc.src.size());
+        struct output_state out_state = {out.data(), out.size(), 0};
+        PREFIX3(stream) d_strm = {};
+        ASSERT_EQ(PREFIX(inflateBackInit)(&d_strm, wb, win.data()), Z_OK);
+        d_strm.next_in = enc.comp.data();
+        d_strm.avail_in = (uint32_t)enc.comp.size();
+        EXPECT_EQ(PREFIX(inflateBack)(&d_strm, pull_all, &d_strm, push_all, &out_state), Z_STREAM_END);
+        EXPECT_EQ(PREFIX(inflateBackEnd)(&d_strm), Z_OK);
+        ASSERT_EQ(out_state.pos, enc.src.size());
+        EXPECT_EQ(memcmp(out.data(), enc.src.data(), enc.src.size()), 0);
+    }
 }
