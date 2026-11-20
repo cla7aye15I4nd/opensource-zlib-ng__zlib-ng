@@ -460,13 +460,15 @@ z_off64_t Z_EXPORT PREFIX4(gzseek)(gzFile file, z_off64_t offset, int whence) {
     }
     offset = pos - state->x.pos;
 
-    /* if reading, skip what's in output buffer (one less gzgetc() check) */
-    if (state->mode == GZ_READ) {
+    /* if reading, skip what's in output buffer without modifying an unset next */
+    if (state->mode == GZ_READ && state->x.have) {
         n = GT_OFF(state->x.have) || (z_off64_t)state->x.have > offset ? (unsigned)offset : state->x.have;
-        state->x.have -= n;
-        state->x.next += n;
-        state->x.pos += n;
-        offset -= n;
+        if (n) {
+            state->x.have -= n;
+            state->x.next += n;
+            state->x.pos += n;
+            offset -= n;
+        }
     }
 
     /* request skip (if not zero) */
