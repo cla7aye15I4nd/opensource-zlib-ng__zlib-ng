@@ -73,3 +73,13 @@ TEST(inflate, sync) {
     err = PREFIX(inflateEnd)(&d_stream);
     EXPECT_EQ(err, Z_OK);
 }
+
+TEST(inflate, sync_primed_bits_with_empty_input) {
+    PREFIX3(stream) stream = {};
+    ASSERT_EQ(PREFIX(inflateInit)(&stream), Z_OK);
+    EXPECT_EQ(PREFIX(inflatePrime)(&stream, 16, 0x1234), Z_OK);
+    EXPECT_EQ(PREFIX(inflateSync)(&stream), Z_DATA_ERROR);
+    EXPECT_EQ(stream.next_in, nullptr);
+    EXPECT_EQ(stream.avail_in, 0U);
+    EXPECT_EQ(PREFIX(inflateEnd)(&stream), Z_OK);
+}
