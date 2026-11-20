@@ -94,6 +94,15 @@ static int gz_avail(gz_state *state) {
     return 0;
 }
 
+/* Return max, or less so state->x.pos + return <= GZ_OFF_MAX. */
+static unsigned gz_room(gz_state *state, unsigned max) {
+    z_off64_t left = state->x.pos < 0 ? GZ_OFF_MAX : GZ_OFF_MAX - state->x.pos;
+    uint64_t room = (uint64_t)left;
+    if (state->x.pos < 0)
+        room += (uint64_t)(-(state->x.pos + 1)) + 1;
+    return room < (uint64_t)max ? (unsigned)room : max;
+}
+
 /* Look for gzip header, set up for inflate or copy.  state->x.have must be 0.
    If this is the first time in, allocate required memory.  state->how will be
    left unchanged if there is no more input data available, will be set to COPY
@@ -156,8 +165,10 @@ static int gz_look(gz_state *state) {
        the output buffer is larger than the input buffer, which also assures
        space for gzungetc() */
     state->x.next = state->out;
-    memcpy(state->x.next, strm->next_in, strm->avail_in);
-    state->x.have = strm->avail_in;
+    state->x.have = gz_room(state, strm->avail_in);
+    memcpy(state->x.next, strm->next_in, state->x.have);
+    if (state->x.have < strm->avail_in)
+        PREFIX(gz_error)(state, Z_DATA_ERROR, "position overflow");
     strm->avail_in = 0;
     state->how = COPY;
     state->direct = 1;
@@ -220,6 +231,7 @@ static int gz_decomp(gz_state *state) {
    otherwise 0.  gz_fetch() will leave state->how as COPY or GZIP unless the
    end of the input file has been reached and all data has been processed.  */
 static int gz_fetch(gz_state *state) {
+    unsigned room;
     PREFIX3(stream) *strm = &(state->strm);
     Assert(state->x.have == 0, "Invalid state->x.have");
 
@@ -232,13 +244,16 @@ static int gz_fetch(gz_state *state) {
                 return 0;
             break;
         case COPY:      /* -> COPY */
-            if (gz_load(state, state->out, state->size << 1, &(state->x.have))
+            /* Fetch at most up to GZ_OFF_MAX, or 1 byte at GZ_OFF_MAX to check EOF. */
+            room = gz_room(state, state->size << 1);
+            state->x.next = state->out;
+            if (gz_load(state, state->out, room ? room : 1, &(state->x.have))
                     == -1)
                 return -1;
-            state->x.next = state->out;
             return 0;
         case GZIP:      /* -> GZIP or LOOK (if end of gzip stream) */
-            strm->avail_out = state->size << 1;
+            room = gz_room(state, state->size << 1);
+            strm->avail_out = room ? room : 1;
             strm->next_out = state->out;
             if (gz_decomp(state) == -1)
                 return -1;
@@ -306,6 +321,14 @@ static size_t gz_read(gz_state *state, void *buf, size_t len) {
         n = (unsigned)-1;
         if (n > len)
             n = (unsigned)len;
+
+        /* do not deliver data past the largest representable position */
+        n = gz_room(state, n);
+        if (n == 0 && state->x.have) {
+            state->x.have = 0;
+            PREFIX(gz_error)(state, Z_DATA_ERROR, "position overflow");
+            break;
+        }
 
         /* first just try copying data from the output buffer */
         if (state->x.have) {
@@ -547,6 +570,12 @@ char * Z_EXPORT PREFIX(gzgets)(gzFile file, char *buf, z_int32_t len) {
 
             /* look for end-of-line in current output buffer */
             n = MIN(state->x.have, left);
+            n = gz_room(state, n);
+            if (n == 0) {
+                state->x.have = 0;
+                PREFIX(gz_error)(state, Z_DATA_ERROR, "position overflow");
+                break;
+            }
             eol = (unsigned char *)memchr(state->x.next, '\n', n);
             if (eol != NULL)
                 n = (unsigned)(eol - state->x.next) + 1;

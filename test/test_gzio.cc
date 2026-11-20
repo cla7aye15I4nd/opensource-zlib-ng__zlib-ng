@@ -10,6 +10,12 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <fcntl.h>
+#ifndef _WIN32
+#  include <unistd.h>
+#else
+#  include <io.h>
+#endif
 #include <string.h>
 #include <vector>
 
@@ -155,3 +161,76 @@ TEST(gzip, setparams_small_output_buffer) {
     EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
 #endif
 }
+
+#ifdef __linux__
+TEST(gzip, read_position_overflow) {
+    const z_off64_t off_max =
+        (z_off64_t)((((uint64_t)1 << (sizeof(z_off64_t) * 8 - 2)) - 1) * 2 + 1);
+#  if !defined(ZLIB_COMPAT)
+    typedef z_off64_t roff_t;
+#    define R_GZSEEK PREFIX(gzseek)
+#    define R_GZTELL PREFIX(gztell)
+#  elif defined(Z_LARGE64)
+    typedef z_off64_t roff_t;
+#    define R_GZSEEK PREFIX4(gzseek)
+#    define R_GZTELL PREFIX4(gztell)
+#  else
+    if (sizeof(z_off_t) != sizeof(z_off64_t))
+        GTEST_SKIP() << "Requires 64-bit gzseek";
+    typedef z_off_t roff_t;
+#    define R_GZSEEK PREFIX(gzseek)
+#    define R_GZTELL PREFIX(gztell)
+#  endif
+
+    /* 1. Public gzgetc() macro stops cleanly at off_max without overflowing pos. */
+    gzFile f = PREFIX(gzopen)("/dev/zero", "rb");
+    ASSERT_NE(f, (gzFile)NULL);
+    EXPECT_EQ(PREFIX(gzgetc)(f), 0);
+    if (R_GZSEEK(f, (roff_t)(off_max - 4), SEEK_SET) != (roff_t)(off_max - 4)) {
+        PREFIX(gzclose)(f);
+        GTEST_SKIP() << "/dev/zero does not allow raw seek";
+    }
+    for (int i = 0; i < 4; i++)
+        EXPECT_EQ(PREFIX(gzgetc)(f), 0);
+    EXPECT_EQ(R_GZTELL(f), (roff_t)off_max);
+    EXPECT_EQ(PREFIX(gzgetc)(f), -1);
+    int err = Z_OK;
+    PREFIX(gzerror)(f, &err);
+    EXPECT_EQ(err, Z_DATA_ERROR);
+    EXPECT_EQ(R_GZTELL(f), (roff_t)off_max);
+    EXPECT_EQ(PREFIX(gzclose)(f), Z_OK);
+
+    /* 2. gzread() stops cleanly at off_max and reports Z_DATA_ERROR on extra data. */
+    f = PREFIX(gzopen)("/dev/zero", "rb");
+    ASSERT_NE(f, (gzFile)NULL);
+    EXPECT_EQ(PREFIX(gzgetc)(f), 0);
+    ASSERT_EQ(R_GZSEEK(f, (roff_t)(off_max - 4), SEEK_SET), (roff_t)(off_max - 4));
+    uint8_t buf[8];
+    EXPECT_EQ(PREFIX(gzread)(f, buf, 4), 4);
+    PREFIX(gzerror)(f, &err);
+    EXPECT_EQ(err, Z_OK);
+    EXPECT_EQ(R_GZTELL(f), (roff_t)off_max);
+    EXPECT_EQ(PREFIX(gzread)(f, buf, 1), -1);
+    PREFIX(gzerror)(f, &err);
+    EXPECT_EQ(err, Z_DATA_ERROR);
+    EXPECT_EQ(PREFIX(gzclose)(f), Z_OK);
+
+    /* 3. gzgets() stops cleanly at off_max as well. */
+    f = PREFIX(gzopen)("/dev/zero", "rb");
+    ASSERT_NE(f, (gzFile)NULL);
+    EXPECT_EQ(PREFIX(gzgetc)(f), 0);
+    ASSERT_EQ(R_GZSEEK(f, (roff_t)(off_max - 2), SEEK_SET), (roff_t)(off_max - 2));
+    char lbuf[16];
+    memset(lbuf, 'x', sizeof(lbuf));
+    EXPECT_EQ(PREFIX(gzgets)(f, lbuf, sizeof(lbuf)), lbuf);
+    EXPECT_EQ(lbuf[0], '\0');
+    EXPECT_EQ(lbuf[1], '\0');
+    EXPECT_EQ(lbuf[2], '\0');
+    EXPECT_EQ(lbuf[3], 'x');
+    EXPECT_EQ(R_GZTELL(f), (roff_t)off_max);
+    EXPECT_EQ(PREFIX(gzgets)(f, lbuf, sizeof(lbuf)), nullptr);
+    PREFIX(gzerror)(f, &err);
+    EXPECT_EQ(err, Z_DATA_ERROR);
+    EXPECT_EQ(PREFIX(gzclose)(f), Z_OK);
+}
+#endif
