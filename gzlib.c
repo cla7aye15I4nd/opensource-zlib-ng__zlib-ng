@@ -405,29 +405,40 @@ z_off64_t Z_EXPORT PREFIX4(gzseek)(gzFile file, z_off64_t offset, int whence) {
     if (whence != SEEK_SET && whence != SEEK_CUR)
         return -1;
 
-    /* compute the absolute position */
-    pos = whence == SEEK_SET ? 0 :
-          state->x.pos + (state->past ? 0 : state->skip);
-    if (offset > GZ_OFF_MAX - pos)
+    /* compute the absolute position without signed overflow */
+    if (whence == SEEK_SET) {
+        pos = 0;
+    } else {
+        z_off64_t skip = state->past ? 0 : state->skip;
+        if (state->x.pos > GZ_OFF_MAX - skip)
+            return -1;
+        pos = state->x.pos + skip;
+    }
+    if (pos >= 0 && offset > GZ_OFF_MAX - pos)
         return -1;                          /* would overflow z_off64_t */
-    if (offset < -pos)
+    if (pos < 0 ? offset < 0 || offset + pos < 0 : offset < -pos)
         return -1;                          /* before start of file */
     pos += offset;
 
     /* if within raw area while reading, just go there */
-    if (state->mode == GZ_READ && state->how == COPY) {
-        ret = LSEEK(state->fd, pos - state->x.pos - (z_off64_t)state->x.have,
-                    SEEK_CUR);
-        if (ret == -1)
-            return -1;
-        state->x.have = 0;
-        state->eof = 0;
-        state->past = 0;
-        state->skip = 0;
-        PREFIX(gz_error)(state, Z_OK, NULL);
-        state->strm.avail_in = 0;
-        state->x.pos = pos;
-        return pos;
+    if (state->mode == GZ_READ && state->how == COPY && !GT_OFF(state->x.have)) {
+        z_off64_t have = (z_off64_t)state->x.have;
+        if (state->x.pos <= GZ_OFF_MAX - have) {
+            z_off64_t base = state->x.pos + have;
+            if (base >= 0 || pos <= GZ_OFF_MAX + base) {
+                ret = LSEEK(state->fd, pos - base, SEEK_CUR);
+                if (ret == -1)
+                    return -1;
+                state->x.have = 0;
+                state->eof = 0;
+                state->past = 0;
+                state->skip = 0;
+                PREFIX(gz_error)(state, Z_OK, NULL);
+                state->strm.avail_in = 0;
+                state->x.pos = pos;
+                return pos;
+            }
+        }
     }
 
     /* rewind if needed for back seek when reading */
@@ -436,6 +447,16 @@ z_off64_t Z_EXPORT PREFIX4(gzseek)(gzFile file, z_off64_t offset, int whence) {
             return -1;
         if (PREFIX(gzrewind)(file) == -1)   /* rewind, then skip to pos */
             return -1;
+    }
+    /* discard pushback before position zero so pos - state->x.pos fits */
+    if (state->mode == GZ_READ && state->x.pos < 0) {
+        unsigned drop = (unsigned)(-state->x.pos);
+        if (drop > state->x.have)
+            drop = state->x.have;
+        state->x.have -= drop;
+        if (drop)
+            state->x.next += drop;
+        state->x.pos += (z_off64_t)drop;
     }
     offset = pos - state->x.pos;
 
