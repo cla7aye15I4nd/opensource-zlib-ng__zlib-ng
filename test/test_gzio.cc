@@ -155,3 +155,26 @@ TEST(gzip, setparams_small_output_buffer) {
     EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
 #endif
 }
+
+#ifndef _WIN32
+TEST(gzip, write_across_4gb_boundary) {
+    gzFile file = PREFIX(gzopen)("/dev/null", "wbT");
+    if (file == NULL)
+        GTEST_SKIP() << "Requires /dev/null";
+#  if !defined(ZLIB_COMPAT) || defined(Z_LARGE64)
+    ASSERT_EQ(PREFIX(gzbuffer)(file, 1U << 26), Z_OK);
+#    ifdef ZLIB_COMPAT
+    EXPECT_EQ(PREFIX4(gzseek)(file, (z_off64_t)0xffffffffLL, SEEK_SET), (z_off64_t)0xffffffffLL);
+#    else
+    EXPECT_EQ(PREFIX(gzseek)(file, (z_off64_t)0xffffffffLL, SEEK_SET), (z_off64_t)0xffffffffLL);
+#    endif
+    EXPECT_EQ(PREFIX(gzwrite)(file, "a", 1), 1);
+#    ifdef ZLIB_COMPAT
+    EXPECT_EQ(PREFIX4(gztell)(file), (z_off64_t)0x100000000LL);
+#    else
+    EXPECT_EQ(PREFIX(gztell)(file), (z_off64_t)0x100000000LL);
+#    endif
+#  endif
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
+}
+#endif

@@ -174,6 +174,12 @@ static size_t gz_write(gz_state *state, void const *buf, size_t len) {
     if (state->skip && gz_zero(state) == -1)
         return 0;
 
+    /* check that the resulting position fits in z_off64_t */
+    if ((uint64_t)len > (uint64_t)(GZ_OFF_MAX - state->x.pos)) {
+        PREFIX(gz_error)(state, Z_DATA_ERROR, "write position does not fit in z_off64_t");
+        return 0;
+    }
+
     /* for small len, copy to input buffer, otherwise compress directly */
     if (len < state->size) {
         /* copy to input buffer, compress when full */
@@ -298,7 +304,7 @@ z_int32_t Z_EXPORT PREFIX(gzputc)(gzFile file, z_int32_t c) {
         if (strm->avail_in == 0)
             strm->next_in = state->in;
         have = (unsigned)((strm->next_in + strm->avail_in) - state->in);
-        if (have < state->size) {
+        if (have < state->size && state->x.pos != GZ_OFF_MAX) {
             state->in[have] = (unsigned char)c;
             strm->avail_in++;
             state->x.pos++;
@@ -375,6 +381,12 @@ z_int32_t Z_EXPORTVA PREFIX(gzvprintf)(gzFile file, const char *format, va_list 
     /* check that printf() results fit in buffer */
     if (len == 0 || (unsigned)len >= state->size || next[state->size - 1] != 0)
         return 0;
+
+    /* check that the resulting position fits in z_off64_t */
+    if ((uint64_t)len > (uint64_t)(GZ_OFF_MAX - state->x.pos)) {
+        PREFIX(gz_error)(state, Z_DATA_ERROR, "write position does not fit in z_off64_t");
+        return state->err;
+    }
 
     /* update buffer and position, compress first half if past that */
     strm->avail_in += (unsigned)len;
