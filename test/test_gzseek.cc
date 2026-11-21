@@ -62,3 +62,54 @@ TEST(gzip, seek) {
     PREFIX(gzclose)(file);
 #endif
 }
+
+/* gzdirect() after a forward gzseek() on transparent input must consume
+ * buffered bytes covered by the pending skip so gzgetc() returns the byte
+ * at the seek target, and must not touch x.next when nothing is buffered. */
+TEST(gzip, seek_then_direct) {
+    const char *path = "seek_direct.txt";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_TRUE(fp != NULL);
+    ASSERT_EQ(fwrite("abcde", 1, 5, fp), 5U);
+    ASSERT_EQ(fclose(fp), 0);
+
+    gzFile file = PREFIX(gzopen)(path, "rb");
+    ASSERT_TRUE(file != NULL);
+    EXPECT_EQ(PREFIX(gzseek)(file, 3, SEEK_SET), 3);
+    EXPECT_EQ(PREFIX(gzdirect)(file), 1);
+    EXPECT_EQ(PREFIX(gzgetc)(file), 'd');
+    EXPECT_EQ(PREFIX(gztell)(file), 4);
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
+
+    file = PREFIX(gzopen)(path, "rb");
+    ASSERT_TRUE(file != NULL);
+    EXPECT_EQ(PREFIX(gzseek)(file, 100, SEEK_SET), 100);
+    EXPECT_EQ(PREFIX(gzdirect)(file), 1);
+    EXPECT_EQ(PREFIX(gzgetc)(file), -1);
+    EXPECT_EQ(PREFIX(gztell)(file), 5);
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
+
+    typedef decltype(PREFIX(gzseek)((gzFile)NULL, 0, SEEK_SET)) off_type;
+    if (sizeof(off_type) == sizeof(z_off64_t)) {
+        const off_type off_max =
+            (off_type)(((uint64_t)1 << (sizeof(off_type) * 8 - 1)) - 1);
+        file = PREFIX(gzopen)(path, "rb");
+        ASSERT_TRUE(file != NULL);
+        EXPECT_EQ(PREFIX(gzseek)(file, off_max, SEEK_SET), off_max);
+        EXPECT_EQ(PREFIX(gzdirect)(file), 1);
+        EXPECT_EQ(PREFIX(gzgetc)(file), -1);
+        EXPECT_EQ(PREFIX(gztell)(file), 5);
+        EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
+    }
+
+    /* Empty file: gz_look() leaves x.have == 0 and x.next unset. */
+    fp = fopen(path, "wb");
+    ASSERT_TRUE(fp != NULL);
+    ASSERT_EQ(fclose(fp), 0);
+    file = PREFIX(gzopen)(path, "rb");
+    ASSERT_TRUE(file != NULL);
+    EXPECT_EQ(PREFIX(gzdirect)(file), 1);
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
+
+    remove(path);
+}
