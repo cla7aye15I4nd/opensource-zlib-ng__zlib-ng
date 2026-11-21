@@ -272,6 +272,8 @@ static int gz_skip(gz_state *state) {
             state->skip -= n;
         } else if (state->eof && state->strm.avail_in == 0) {
             /* output buffer empty -- return if we're at the end of the input */
+            state->skip = 0;
+            state->past = 1;
             break;
         } else {
             /* need more data to skip -- load up output buffer */
