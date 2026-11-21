@@ -674,6 +674,8 @@ int32_t Z_EXPORT PREFIX(deflateParams)(PREFIX3(stream) *strm, int32_t level, int
 }
 
 /* ========================================================================= */
+/* Parameters must be non-negative; good_length, max_lazy, and nice_length
+ * are match lengths (at most STD_MAX_MATCH). */
 int32_t Z_EXPORT PREFIX(deflateTune)(PREFIX3(stream) *strm, int32_t good_length, int32_t max_lazy, int32_t nice_length, int32_t max_chain) {
     deflate_state *s;
 
