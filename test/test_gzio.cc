@@ -7,6 +7,11 @@
 #  include "zlib-ng.h"
 #endif
 
+#ifndef _WIN32
+#  include <fcntl.h>
+#  include <unistd.h>
+#endif
+#include <errno.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -155,3 +160,143 @@ TEST(gzip, setparams_small_output_buffer) {
     EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
 #endif
 }
+
+#if !defined(_WIN32) && !defined(NO_GZCOMPRESS)
+namespace {
+
+/* RAII guard that closes open pipe file descriptors when a test exits early. */
+struct gz_pipe_guard {
+    int fds[2];
+
+    gz_pipe_guard() {
+        fds[0] = -1;
+        fds[1] = -1;
+    }
+
+    ~gz_pipe_guard() {
+        if (fds[0] >= 0) {
+            close(fds[0]);
+        }
+        if (fds[1] >= 0) {
+            close(fds[1]);
+        }
+    }
+
+    int detach_writer() {
+        int write_fd = fds[1];
+        fds[1] = -1;
+        return write_fd;
+    }
+};
+
+} // namespace
+
+/* A seek on a writer whose zeros cannot be written: the position reported
+ * stays the one sought, after the failed gzwrite() and after a failed
+ * gzputc() that retries the zeros. */
+TEST(gzip, seek_zeros_write_error_position) {
+    typedef decltype(PREFIX(gzseek)((gzFile)NULL, 0, SEEK_SET)) off_type;
+    if (sizeof(off_type) != sizeof(z_off64_t)) {
+        GTEST_SKIP() << "gzseek() does not take a z_off64_t offset";
+    }
+    const off_type off_max =
+        (off_type)(((uint64_t)1 << (sizeof(off_type) * 8 - 1)) - 1);
+
+    int read_fd = open("/dev/null", O_RDONLY);    /* every write() fails */
+    ASSERT_GE(read_fd, 0);
+    gzFile file = PREFIX(gzdopen)(read_fd, "wT");
+    if (file == NULL) {
+        close(read_fd);
+        FAIL() << "gzdopen failed";
+    }
+    EXPECT_EQ(PREFIX(gzseek)(file, off_max, SEEK_SET), off_max);
+    EXPECT_EQ(PREFIX(gzwrite)(file, "x", 1), 0);
+    int err = 0;
+    PREFIX(gzerror)(file, &err);
+    EXPECT_EQ(err, Z_ERRNO);
+    EXPECT_EQ(PREFIX(gztell)(file), off_max);
+    PREFIX(gzclearerr)(file);
+    EXPECT_EQ(PREFIX(gzputc)(file, 'y'), -1);
+    EXPECT_EQ(PREFIX(gztell)(file), off_max);
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_ERRNO);
+}
+
+/* A seek on a writer whose first write of zeros fails with EAGAIN (a full
+ * non-blocking pipe): after the pipe is drained and the error cleared, the
+ * same gzwrite() writes exactly the zeros sought and the data, once. */
+TEST(gzip, seek_zeros_write_retry) {
+    gz_pipe_guard pipe_pair;
+    uint8_t buf[4096];
+    ASSERT_EQ(pipe(pipe_pair.fds), 0);
+    int rflags = fcntl(pipe_pair.fds[0], F_GETFL, 0);
+    ASSERT_NE(rflags, -1);
+    ASSERT_EQ(fcntl(pipe_pair.fds[0], F_SETFL, rflags | O_NONBLOCK), 0);
+    int wflags = fcntl(pipe_pair.fds[1], F_GETFL, 0);
+    ASSERT_NE(wflags, -1);
+    ASSERT_EQ(fcntl(pipe_pair.fds[1], F_SETFL, wflags | O_NONBLOCK), 0);
+
+    memset(buf, 'f', sizeof(buf));
+    for (;;) {
+        ssize_t written = write(pipe_pair.fds[1], buf, sizeof(buf));
+        if (written > 0 || (written == -1 && errno == EINTR))
+            continue;
+        ASSERT_EQ(written, -1);
+        ASSERT_TRUE(errno == EAGAIN || errno == EWOULDBLOCK);
+        break;
+    }
+    for (;;) {
+        ssize_t written = write(pipe_pair.fds[1], buf, 1);
+        if (written > 0 || (written == -1 && errno == EINTR))
+            continue;
+        ASSERT_EQ(written, -1);
+        ASSERT_TRUE(errno == EAGAIN || errno == EWOULDBLOCK);
+        break;
+    }
+
+    int write_fd = pipe_pair.detach_writer();
+    gzFile file = PREFIX(gzdopen)(write_fd, "wT");
+    if (file == NULL) {
+        close(write_fd);
+        FAIL() << "gzdopen failed";
+    }
+    EXPECT_EQ(PREFIX(gzbuffer)(file, 4096), 0);
+    EXPECT_EQ(PREFIX(gzseek)(file, 10000, SEEK_SET), 10000);
+    EXPECT_EQ(PREFIX(gzwrite)(file, "abc", 3), 0);
+    int err = 0;
+    PREFIX(gzerror)(file, &err);
+    EXPECT_EQ(err, Z_ERRNO);
+    EXPECT_EQ(PREFIX(gztell)(file), 10000);
+
+    for (;;) {
+        ssize_t nread = read(pipe_pair.fds[0], buf, sizeof(buf));
+        if (nread > 0 || (nread == -1 && errno == EINTR))
+            continue;
+        ASSERT_EQ(nread, -1);
+        ASSERT_TRUE(errno == EAGAIN || errno == EWOULDBLOCK);
+        break;
+    }
+    ASSERT_EQ(fcntl(write_fd, F_SETFL, wflags), 0);
+    PREFIX(gzclearerr)(file);
+    EXPECT_EQ(PREFIX(gzwrite)(file, "abc", 3), 3);
+    EXPECT_EQ(PREFIX(gztell)(file), 10003);
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
+
+    std::vector<uint8_t> got;
+    for (;;) {
+        ssize_t nread = read(pipe_pair.fds[0], buf, sizeof(buf));
+        if (nread > 0) {
+            got.insert(got.end(), buf, buf + nread);
+            continue;
+        }
+        if (nread == -1 && errno == EINTR)
+            continue;
+        ASSERT_EQ(nread, 0);
+        break;
+    }
+    ASSERT_EQ(got.size(), 10003U);
+    for (size_t idx = 0; idx < 10000; idx++) {
+        ASSERT_EQ(got[idx], 0);
+    }
+    EXPECT_EQ(memcmp(got.data() + 10000, "abc", 3), 0);
+}
+#endif
