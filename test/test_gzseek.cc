@@ -62,3 +62,45 @@ TEST(gzip, seek) {
     PREFIX(gzclose)(file);
 #endif
 }
+
+/* gz_skip() must clear state->skip and set state->past when it reaches EOF so
+ * gztell() and gzeof() reflect the end of the file, and a later gzgets() on a
+ * file that grows does not overflow gztell() by keeping stale skip. */
+TEST(gzip, seek_past_end_forced_ungetc) {
+    const char *path = "seek_eof.txt";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_TRUE(fp != NULL);
+    ASSERT_EQ(fwrite("abc", 1, 3, fp), 3U);
+    ASSERT_EQ(fclose(fp), 0);
+
+    gzFile file = PREFIX(gzopen)(path, "rb");
+    ASSERT_TRUE(file != NULL);
+    EXPECT_EQ(PREFIX(gzseek)(file, 100, SEEK_SET), 100);
+    EXPECT_EQ(PREFIX(gzungetc)(-1, file), -1);
+    EXPECT_EQ(PREFIX(gztell)(file), 3);
+    EXPECT_EQ(PREFIX(gzeof)(file), 1);
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
+
+    typedef decltype(PREFIX(gzseek)((gzFile)NULL, 0, SEEK_SET)) off_type;
+    if (sizeof(off_type) == sizeof(z_off64_t)) {
+        const off_type off_max =
+            (off_type)(((uint64_t)1 << (sizeof(off_type) * 8 - 1)) - 1);
+        file = PREFIX(gzopen)(path, "rb");
+        ASSERT_TRUE(file != NULL);
+        EXPECT_EQ(PREFIX(gzseek)(file, off_max, SEEK_SET), off_max);
+        EXPECT_EQ(PREFIX(gzungetc)(-1, file), -1);
+        EXPECT_EQ(PREFIX(gztell)(file), 3);
+
+        fp = fopen(path, "ab");
+        ASSERT_TRUE(fp != NULL);
+        ASSERT_EQ(fwrite("de\n", 1, 3, fp), 3U);
+        ASSERT_EQ(fclose(fp), 0);
+
+        char buf[16];
+        EXPECT_STREQ(PREFIX(gzgets)(file, buf, (int)sizeof(buf)), "de\n");
+        EXPECT_EQ(PREFIX(gztell)(file), 6);
+        EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
+    }
+
+    remove(path);
+}
