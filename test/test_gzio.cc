@@ -7,6 +7,10 @@
 #  include "zlib-ng.h"
 #endif
 
+#ifndef _WIN32
+#  include <fcntl.h>
+#  include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -155,3 +159,73 @@ TEST(gzip, setparams_small_output_buffer) {
     EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
 #endif
 }
+
+#if !defined(_WIN32) && !defined(NO_GZCOMPRESS)
+/* A seek on a writer whose zeros cannot be written: the position reported
+ * stays the one sought, after the failed gzwrite() and after a failed
+ * gzputc() that retries the zeros. */
+TEST(gzip, seek_zeros_write_error_position) {
+    typedef decltype(PREFIX(gzseek)((gzFile)NULL, 0, SEEK_SET)) off_type;
+    if (sizeof(off_type) != sizeof(z_off64_t))
+        GTEST_SKIP() << "gzseek() does not take a z_off64_t offset";
+    const off_type off_max =
+        (off_type)(((uint64_t)1 << (sizeof(off_type) * 8 - 1)) - 1);
+
+    int fd = open("/dev/null", O_RDONLY);    /* every write() fails */
+    ASSERT_GE(fd, 0);
+    gzFile file = PREFIX(gzdopen)(fd, "wT");
+    ASSERT_TRUE(file != NULL);
+    EXPECT_EQ(PREFIX(gzseek)(file, off_max, SEEK_SET), off_max);
+    EXPECT_EQ(PREFIX(gzwrite)(file, "x", 1), 0);
+    int err;
+    PREFIX(gzerror)(file, &err);
+    EXPECT_EQ(err, Z_ERRNO);
+    EXPECT_EQ(PREFIX(gztell)(file), off_max);
+    PREFIX(gzclearerr)(file);
+    EXPECT_EQ(PREFIX(gzputc)(file, 'y'), -1);
+    EXPECT_EQ(PREFIX(gztell)(file), off_max);
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_ERRNO);
+}
+
+/* A seek on a writer whose first write of zeros fails with EAGAIN (a full
+ * non-blocking pipe): after the pipe is drained and the error cleared, the
+ * same gzwrite() writes exactly the zeros sought and the data, once. */
+TEST(gzip, seek_zeros_write_retry) {
+    int fds[2];
+    char buf[4096];
+    ASSERT_EQ(pipe(fds), 0);
+    ASSERT_EQ(fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL) | O_NONBLOCK), 0);
+    int flags = fcntl(fds[1], F_GETFL);
+    ASSERT_EQ(fcntl(fds[1], F_SETFL, flags | O_NONBLOCK), 0);
+    memset(buf, 'f', sizeof(buf));
+    while (write(fds[1], buf, sizeof(buf)) > 0) {}
+    while (write(fds[1], buf, 1) > 0) {}
+
+    gzFile file = PREFIX(gzdopen)(fds[1], "wT");
+    ASSERT_TRUE(file != NULL);
+    EXPECT_EQ(PREFIX(gzbuffer)(file, 4096), 0);
+    EXPECT_EQ(PREFIX(gzseek)(file, 10000, SEEK_SET), 10000);
+    EXPECT_EQ(PREFIX(gzwrite)(file, "abc", 3), 0);
+    int err;
+    PREFIX(gzerror)(file, &err);
+    EXPECT_EQ(err, Z_ERRNO);
+    EXPECT_EQ(PREFIX(gztell)(file), 10000);
+
+    while (read(fds[0], buf, sizeof(buf)) > 0) {}
+    ASSERT_EQ(fcntl(fds[1], F_SETFL, flags), 0);
+    PREFIX(gzclearerr)(file);
+    EXPECT_EQ(PREFIX(gzwrite)(file, "abc", 3), 3);
+    EXPECT_EQ(PREFIX(gztell)(file), 10003);
+    EXPECT_EQ(PREFIX(gzclose)(file), Z_OK);
+
+    std::vector<uint8_t> got;
+    ssize_t n;
+    while ((n = read(fds[0], buf, sizeof(buf))) > 0)
+        got.insert(got.end(), buf, buf + n);
+    close(fds[0]);
+    ASSERT_EQ(got.size(), 10003U);
+    for (size_t i = 0; i < 10000; i++)
+        ASSERT_EQ(got[i], 0);
+    EXPECT_EQ(memcmp(got.data() + 10000, "abc", 3), 0);
+}
+#endif
