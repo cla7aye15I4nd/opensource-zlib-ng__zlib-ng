@@ -65,6 +65,7 @@ static void gz_reset(gz_state *state) {
     }
     else                            /* for writing ... */
         state->reset = 0;           /* no deflateReset pending */
+    state->again = 0;               /* no stalled i/o yet */
     state->skip = 0;                /* no seek request pending */
     PREFIX(gz_error)(state, Z_OK, NULL);    /* clear error */
     state->x.pos = 0;               /* no uncompressed data yet */
@@ -113,10 +114,7 @@ void Z_INTERNAL gz_buffer_free(gz_state *state) {
 static gzFile gz_open(const void *path, int fd, const char *mode) {
     gz_state *state;
     size_t len;
-    int oflag;
-#ifdef O_CLOEXEC
-    int cloexec = 0;
-#endif
+    int oflag = 0;
 #ifdef O_EXCL
     int exclusive = 0;
 #endif
@@ -154,7 +152,7 @@ static gzFile gz_open(const void *path, int fd, const char *mode) {
                 break;
 #ifdef O_CLOEXEC
             case 'e':
-                cloexec = 1;
+                oflag |= O_CLOEXEC;
                 break;
 #endif
 #ifdef O_EXCL
@@ -177,6 +175,11 @@ static gzFile gz_open(const void *path, int fd, const char *mode) {
             case 'G':
                 state->direct = -1;
                 break;
+#ifdef O_NONBLOCK
+            case 'N':
+                oflag |= O_NONBLOCK;
+                break;
+#endif
             case 'T':
                 state->direct = 1;
                 break;
@@ -239,15 +242,12 @@ static gzFile gz_open(const void *path, int fd, const char *mode) {
         (void)snprintf(state->path, len + 1, "%s", (const char *)path);
 
     /* compute the flags for open() */
-    oflag =
+    oflag |=
 #ifdef O_LARGEFILE
         O_LARGEFILE |
 #endif
 #ifdef O_BINARY
         O_BINARY |
-#endif
-#ifdef O_CLOEXEC
-        (cloexec ? O_CLOEXEC : 0) |
 #endif
         (state->mode == GZ_READ ?
          O_RDONLY :
@@ -260,13 +260,25 @@ static gzFile gz_open(const void *path, int fd, const char *mode) {
            O_APPEND)));
 
     /* open the file with the appropriate flags (or just use fd) */
-    state->fd = fd > -1 ? fd : (
-#if defined(_WIN32)
-        fd == -2 ? _wopen((const wchar_t *)path, oflag, 0666) :
-#elif defined(__CYGWIN__)
-        fd == -2 ? open(state->path, oflag, 0666) :
+    if (fd > -1) {
+#ifdef O_NONBLOCK
+        if (oflag & O_NONBLOCK)
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
 #endif
-        open((const char *)path, oflag, 0666));
+#if defined(O_CLOEXEC) && defined(FD_CLOEXEC)
+        if (oflag & O_CLOEXEC)
+            fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+#endif
+        state->fd = fd;
+    } else {
+        state->fd = (
+#if defined(_WIN32)
+            fd == -2 ? _wopen((const wchar_t *)path, oflag, 0666) :
+#elif defined(__CYGWIN__)
+            fd == -2 ? open(state->path, oflag, 0666) :
+#endif
+            open((const char *)path, oflag, 0666));
+    }
     if (state->fd == -1) {
         free(state->path);
         gz_state_free(state);
@@ -586,7 +598,7 @@ void Z_INTERNAL PREFIX(gz_error)(gz_state *state, int err, const char *msg) {
     }
 
     /* if fatal, set state->x.have to 0 so that the gzgetc() macro fails */
-    if (err != Z_OK && err != Z_BUF_ERROR)
+    if (err != Z_OK && err != Z_BUF_ERROR && !state->again)
         state->x.have = 0;
 
     /* set error code, and if no message, then done */

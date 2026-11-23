@@ -70,11 +70,25 @@
 #endif
 
 /* get errno and strerror definition */
+#include <errno.h>
 #ifndef NO_STRERROR
-#  include <errno.h>
 #  define zstrerror() strerror(errno)
 #else
 #  define zstrerror() "stdio error (consult errno)"
+#endif
+
+#ifdef EAGAIN
+#  ifdef EWOULDBLOCK
+#    define BLOCKED(e) ((e) == EAGAIN || (e) == EWOULDBLOCK)
+#  else
+#    define BLOCKED(e) ((e) == EAGAIN)
+#  endif
+#else
+#  ifdef EWOULDBLOCK
+#    define BLOCKED(e) ((e) == EWOULDBLOCK)
+#  else
+#    define BLOCKED(e) (0)
+#  endif
 #endif
 
 /* default memLevel */
@@ -127,6 +141,7 @@ typedef struct {
     int direct;             /* 0 if processing gzip, 1 if transparent */
         /* just for reading */
     int how;                /* 0: get header, 1: copy, 2: decompress */
+    int again;              /* true if EAGAIN or EWOULDBLOCK on last i/o */
     z_off64_t start;        /* where the gzip data started, for rewinding */
     int eof;                /* true if end of input file reached */
     int past;               /* true if read requested past end */
